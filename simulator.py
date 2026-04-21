@@ -226,10 +226,18 @@ class EngineSimulator:
         if self.leak.zone_b_severity > 0:
             map_abs_kpa *= (1.0 - self.leak.zone_b_severity)
             if self.leak.zone_b_location == "before_intercooler":
-                # Boost temp won't drop — detected by comparing boost vs intercooler outlet
-                pass
+                # Leak is between turbo compressor outlet and intercooler inlet.
+                # Boost temperature at the turbo outlet is UNCHANGED (leak is downstream of turbo).
+                # However, the intercooler sees reduced flow, so it removes relatively
+                # more heat per unit mass → intercooler outlet temp drops noticeably.
+                # The boost_temp sensor (turbo outlet side) reads normally,
+                # but the intercooler outlet temperature is lower → delta SHRINKS.
+                temp_drop_factor = self.leak.zone_b_severity * 0.6
+                intercooler_outlet_c -= comp_temp_rise * temp_drop_factor
             else:  # after_intercooler
-                # Intercooler outlet pressure drops, outlet temp unaffected
+                # Leak is between intercooler outlet and intake manifold.
+                # Intercooler operates normally → boost_temp and ic_outlet behave normally.
+                # Only a very slight pressure-driven temperature change at outlet.
                 intercooler_outlet_c -= 2.0 * self.leak.zone_b_severity  # slight temp delta
 
         # Zone C — exhaust valve or manifold leak → EBP drops

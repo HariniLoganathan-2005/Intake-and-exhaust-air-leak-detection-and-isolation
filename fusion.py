@@ -27,7 +27,7 @@ PHYSICS_MIN_RESIDUAL = 3.0   # %
 # Action lookup per zone × sub-location
 ACTION_MAP = {
     "A": {
-        "intake_duct_or_air_filter":
+        "pre_turbo_leak":
             "Inspect air filter element and intake ducting from filter to turbocharger inlet.",
         "unknown":
             "Check entire Zone A air path from ambient intake to turbo inlet.",
@@ -125,6 +125,15 @@ def fuse(
             if not zr.suppressed
         ) if any(not zr.suppressed for zr in [zone_a, zone_b, zone_c]) else 0.0
         decision.physics_score = min(30.0, max_res * 1.5)
+
+    # ── 2b. ML Suppression Override ───────────────────────────────────────────
+    # If the ML model flags an anomaly in a zone that the physics engine has
+    # explicitly suppressed (e.g. DPF regen), we must suppress the ML flag too.
+    if ml.flag:
+        if (ml.anomaly_zone == "A" and zone_a.suppressed) or \
+           (ml.anomaly_zone == "B" and zone_b.suppressed) or \
+           (ml.anomaly_zone == "C" and zone_c.suppressed):
+            ml.flag = False
 
     # ── 3. ML score ───────────────────────────────────────────────────────────
     decision.ml_flag          = ml.flag

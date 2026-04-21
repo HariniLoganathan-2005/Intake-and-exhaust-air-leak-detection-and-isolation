@@ -32,15 +32,22 @@ from simulator import (
     TURBO_RPM_BREAKPOINTS, TURBO_PRESSURE_RATIO,
     EBP_COEFF_FUEL, EBP_COEFF_RPM, EBP_INTERCEPT,
     DISPLACEMENT_L, INTERCOOLER_EFFICIENCY,
-    _air_density, _ve_lookup, _turbo_pressure_ratio,
+    _air_density, _ve_lookup, _turbo_pressure_ratio, _turbo_comp_temp_rise,
 )
 
 # ─── Detection Thresholds ─────────────────────────────────────────────────────
 ZONE_A_MAF_THRESHOLD_PCT = 8.0        # % residual to flag
 ZONE_B_MAP_THRESHOLD_PCT = 6.0        # % residual to flag
 ZONE_C_EBP_THRESHOLD_PCT = 12.0       # % residual to flag (EBP drops on leak)
-EGT_DELTA_THRESHOLD_C    = 20.0       # °C difference between EGT pair for sub-location
-BOOST_IC_DELTA_THRESHOLD = 8.0        # °C difference for Zone B sub-location
+EGT_DELTA_THRESHOLD_C    = 8.0        # °C difference between EGT pair for sub-location
+                                       # (reduced from 20 °C — median filter dampens raw signal)
+# Zone B sub-location thresholds.
+# At healthy operating conditions the boost→intercooler_outlet temp delta is
+# ~37–39 °C.  A leak BEFORE the intercooler reduces hot-air mass-flow into it,
+# causing the outlet temperature to fall further → delta RISES above baseline.
+# A leak AFTER the intercooler leaves the intercooler unaffected → delta ≈ baseline.
+BOOST_IC_DELTA_THRESHOLD     = 8.0    # °C — retained for legacy compatibility
+BOOST_IC_BEFORE_IC_THRESHOLD = 43.0  # °C — delta above this → leak is BEFORE intercooler
 
 # ─── Drift Detection ──────────────────────────────────────────────────────────
 DRIFT_WINDOW  = 50          # samples (~5 s at 100 ms)
@@ -99,10 +106,15 @@ class ZoneADetector:
     def __init__(self):
         self._tracker = ResidualTracker()
 
-    def _expected_maf(self, rpm: float, iat_c: float, map_kpa: float) -> float:
-        """Expected MAF in g/s given current operating point."""
+    def _expected_maf(self, rpm: float, intercooler_outlet_c: float, map_kpa: float) -> float:
+        """Expected MAF in g/s given current operating point.
+
+        Uses intercooler_outlet_c (not iat_c) for air density — this matches the
+        simulator physics exactly and eliminates RPM-dependent bias that arose when
+        iat_c (post-sensor noise) was used instead.
+        """
         ve            = _ve_lookup(rpm)
-        rho           = _air_density(iat_c, map_kpa)
+        rho           = _air_density(intercooler_outlet_c, map_kpa)
         vol_flow_m3s  = (DISPLACEMENT_L / 1000.0) * (rpm / 60.0) / 2.0
         vol_flow_m3s *= ve
         return vol_flow_m3s * rho * 1000.0    # g/s
@@ -120,16 +132,16 @@ class ZoneADetector:
             result.suppression_reason = "High EGR — bypasses MAF path"
             return result
 
-        rpm     = filt["rpm"]
-        iat_c   = filt["iat_c"]
-        map_kpa = filt["map_kpa"]
-        actual  = filt["maf_gs"]
+        rpm                  = filt["rpm"]
+        intercooler_outlet_c = filt["intercooler_outlet_c"]   # FIX: use intercooler temp, not iat_c
+        map_kpa              = filt["map_kpa"]
+        actual               = filt["maf_gs"]
 
-        expected = self._expected_maf(rpm, iat_c, map_kpa)
+        expected = self._expected_maf(rpm, intercooler_outlet_c, map_kpa)
         if expected <= 0:
             return result
 
-        # Residual: negative means actual is LOWER than expected (leak symptom)
+        # Residual: positive means actual is LOWER than expected (leak symptom)
         residual_pct = ((expected - actual) / expected) * 100.0
         self._tracker.push(residual_pct)
 
@@ -139,10 +151,9 @@ class ZoneADetector:
         result.drift         = self._tracker.is_drifting()
         result.confidence    = _pct_to_confidence(residual_pct, ZONE_A_MAF_THRESHOLD_PCT)
 
-        # Drift is informational — never suppresses a genuine residual flag
         if residual_pct >= ZONE_A_MAF_THRESHOLD_PCT:
-            result.flag         = True
-            result.sub_location = "intake_duct_or_air_filter"
+            result.flag = True
+            result.sub_location = "pre_turbo_leak"
 
         return result
 
@@ -192,15 +203,37 @@ class ZoneBDetector:
         # Drift is informational — never suppresses a genuine residual flag
         if residual_pct >= ZONE_B_MAP_THRESHOLD_PCT:
             result.flag = True
-            # Sub-location: compare boost_temp and intercooler_outlet
-            boost_temp = filt.get("boost_temp_c", 0)
-            ic_temp    = filt.get("intercooler_outlet_c", 0)
-            delta      = boost_temp - ic_temp
-            if delta < BOOST_IC_DELTA_THRESHOLD:
-                # Intercooler is working normally → leak is BEFORE intercooler
+            # Sub-location via boost→intercooler_outlet temperature delta:
+            #
+            # BEFORE intercooler (turbo outlet hose / compressor outlet):
+            #   Compressed air escapes before reaching the intercooler.
+            #   The intercooler sees reduced hot mass-flow → cools what little air
+            #   it receives more aggressively → outlet temperature DROPS further
+            #   → delta (boost_temp − ic_outlet) RISES above the healthy baseline.
+            #
+            # AFTER intercooler (intercooler outlet hose / clamp / intake fitting):
+            #   Air escapes downstream of the intercooler.
+            #   The intercooler operates normally on the full hot charge →
+            #   delta stays near the healthy ~37–39 °C baseline.
+            #
+            boost_temp = filt.get("boost_temp_c", 0.0)
+            ic_temp    = filt.get("intercooler_outlet_c", 0.0)
+            temp_delta = boost_temp - ic_temp
+
+            # Dynamic Baseline Calculation
+            # Calculates what the temp drop SHOULD be at this exact RPM
+            expected_comp_temp_rise = _turbo_comp_temp_rise(rpm)
+            expected_baseline_delta = expected_comp_temp_rise * INTERCOOLER_EFFICIENCY
+            
+            # If the actual temp drop exceeds expected by more than 5 degrees, the intercooler is starved
+            dynamic_threshold = expected_baseline_delta + 5.0
+
+            if temp_delta > dynamic_threshold:
+                # Delta is significantly higher than expected baseline → intercooler starved
+                # → leak is upstream of the intercooler
                 result.sub_location = "before_intercooler_hose_or_turbo_outlet"
             else:
-                # Intercooler not cooling much → leak is AFTER intercooler
+                # Delta is near baseline → intercooler working normally → leak is downstream
                 result.sub_location = "after_intercooler_hose_or_clamp"
 
         return result
@@ -218,18 +251,31 @@ class ZoneCDetector:
     def __init__(self):
         self._tracker = ResidualTracker()
 
-    def _expected_ebp(self, fuel_gs: float, rpm: float) -> float:
-        return (EBP_COEFF_FUEL * fuel_gs
-                + EBP_COEFF_RPM * rpm
+    def _expected_ebp(self, fuel_gs: float, rpm: float, dpf_regen: bool = False) -> float:
+        """Expected EBP in kPa.
+
+        When DPF regen is active the filter is being actively regenerated and
+        exhaust backpressure rises naturally by ~35 %.  The model must account
+        for this so the residual stays near zero during regen events and does
+        not produce a false Zone C flag.
+        """
+        base = (EBP_COEFF_FUEL * fuel_gs
+                + EBP_COEFF_RPM  * rpm
                 + EBP_INTERCEPT)
+        if dpf_regen:
+            base *= 1.35   # mirrors the simulator's regen multiplier
+        return base
 
     def run(self, filt: dict, ecu: dict) -> ZoneResult:
         result = ZoneResult(zone="C", sensor_name="ebp_kpa")
 
-        # Edge-case suppression
-        if ecu.get("dpf_regen"):
+        # ── Edge-case suppression ─────────────────────────────────────────────
+        # DPF regen raises EBP naturally — must suppress OR compensate via model.
+        # We do BOTH: suppress first (fast path), then compensate in model (safety net).
+        dpf_regen = bool(ecu.get("dpf_regen", False))
+        if dpf_regen:
             result.suppressed = True
-            result.suppression_reason = "DPF regen active — EBP naturally elevated"
+            result.suppression_reason = "DPF regen active — EBP naturally elevated; Zone C suppressed"
             return result
         if ecu.get("coolant_temp_c", 88) < 60:
             result.suppressed = True
@@ -239,7 +285,8 @@ class ZoneCDetector:
         fuel_gs  = filt["fuel_rate_gs"]
         rpm      = filt["rpm"]
         actual   = filt["ebp_kpa"]
-        expected = self._expected_ebp(fuel_gs, rpm)
+        # Pass dpf_regen=False here (regen case already returned above)
+        expected = self._expected_ebp(fuel_gs, rpm, dpf_regen=False)
 
         # For Zone C, leak DROPS EBP — actual is lower than expected
         residual_pct = ((expected - actual) / max(expected, 0.1)) * 100.0
@@ -254,13 +301,21 @@ class ZoneCDetector:
         # Drift is informational — never suppresses a genuine residual flag
         if residual_pct >= ZONE_C_EBP_THRESHOLD_PCT:
             result.flag = True
-            # Sub-location: which EGT is dropping abnormally
-            egt1 = filt.get("egt_1_c", 0)
-            egt2 = filt.get("egt_2_c", 0)
+            # Sub-location: which EGT sensor is reading abnormally low.
+            # The simulator cools egt_1 for an upstream bank leak and egt_2 for downstream.
+            # A cooled sensor reads LOWER than its pair → negative delta for upstream.
+            # delta = egt1 − egt2:
+            #   delta << 0  → egt1 is low  → upstream  bank exhaust port / manifold crack
+            #   delta >> 0  → egt2 is low  → downstream bank / DPF or catalyst section
+            #   |delta| small → no clear lateralisation → general restriction / EBP sensor
+            egt1  = filt.get("egt_1_c", 0.0)
+            egt2  = filt.get("egt_2_c", 0.0)
             delta = egt1 - egt2
-            if delta > EGT_DELTA_THRESHOLD_C:
+            if delta < -EGT_DELTA_THRESHOLD_C:
+                # egt1 is significantly lower → upstream bank is losing exhaust heat
                 result.sub_location = "upstream_bank_cylinder_exhaust_ports"
-            elif delta < -EGT_DELTA_THRESHOLD_C:
+            elif delta > EGT_DELTA_THRESHOLD_C:
+                # egt2 is significantly lower → downstream / DPF or catalyst section
                 result.sub_location = "downstream_bank_DPF_or_catalyst"
             else:
                 result.sub_location = "general_exhaust_restriction"
