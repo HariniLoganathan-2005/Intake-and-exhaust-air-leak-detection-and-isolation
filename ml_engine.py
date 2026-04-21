@@ -269,16 +269,21 @@ if __name__ == "__main__":
     import sys
     if "--train" in sys.argv:
         from simulator import EngineSimulator
-        print("[ML] Generating 30-minute healthy dataset...")
+        print("[ML] Generating robust full-envelope healthy dataset...")
         sim = EngineSimulator(2000, 60)
-        # Vary RPM and load to get diverse but healthy data
+        # Vary RPM and load in a complete grid to map all edge cases
         rows = []
-        for cycle in range(6):
-            sim.set_operating_point(1200 + cycle * 300, 40 + cycle * 8)
-            df_part = sim.run_batch(duration_s=300.0)  # 5 min each
-            rows.append(df_part)
+        rpm_targets = [800, 1300, 1800, 2300, 2800, 3000]
+        load_targets = [10, 35, 60, 85, 100]
+        
+        for rpm in rpm_targets:
+            for load in load_targets:
+                sim.set_operating_point(rpm, load)
+                df_part = sim.run_batch(duration_s=120.0)  # 2 min per combination
+                rows.append(df_part)
+                
         df_all = pd.concat(rows, ignore_index=True)
-        print(f"[ML] Dataset: {len(df_all)} rows")
+        print(f"[ML] Dataset: {len(df_all)} rows (Full Grid Coverage)")
         threshold, _ = train_autoencoder(df_all, save=True)
         print(f"[ML] Training complete. Threshold = {threshold:.6f}")
     else:
