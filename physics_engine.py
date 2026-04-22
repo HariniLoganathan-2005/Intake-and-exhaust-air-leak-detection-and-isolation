@@ -32,6 +32,7 @@ from simulator import (
     TURBO_RPM_BREAKPOINTS, TURBO_PRESSURE_RATIO,
     EBP_COEFF_FUEL, EBP_COEFF_RPM, EBP_INTERCEPT,
     DISPLACEMENT_L, INTERCOOLER_EFFICIENCY,
+    EGT_BASE_K, EGT_PER_RPM,
     _air_density, _ve_lookup, _turbo_pressure_ratio, _turbo_comp_temp_rise,
 )
 
@@ -301,24 +302,52 @@ class ZoneCDetector:
         # Drift is informational — never suppresses a genuine residual flag
         if residual_pct >= ZONE_C_EBP_THRESHOLD_PCT:
             result.flag = True
-            # Sub-location: which EGT sensor is reading abnormally low.
-            # The simulator cools egt_1 for an upstream bank leak and egt_2 for downstream.
-            # A cooled sensor reads LOWER than its pair → negative delta for upstream.
-            # delta = egt1 − egt2:
-            #   delta << 0  → egt1 is low  → upstream  bank exhaust port / manifold crack
-            #   delta >> 0  → egt2 is low  → downstream bank / DPF or catalyst section
-            #   |delta| small → no clear lateralisation → general restriction / EBP sensor
-            egt1  = filt.get("egt_1_c", 0.0)
-            egt2  = filt.get("egt_2_c", 0.0)
-            delta = egt1 - egt2
-            if delta < -EGT_DELTA_THRESHOLD_C:
-                # egt1 is significantly lower → upstream bank is losing exhaust heat
-                result.sub_location = "upstream_bank_cylinder_exhaust_ports"
-            elif delta > EGT_DELTA_THRESHOLD_C:
-                # egt2 is significantly lower → downstream / DPF or catalyst section
-                result.sub_location = "downstream_bank_DPF_or_catalyst"
+            # Sub-location: Evaluate the EGT Chain
+            # Find the first sensor that is reading abnormally low compared to expected base.
+            load_pct = ecu.get("load_pct", 60.0) # wait, ECU flags doesn't have load? 
+            # I need `load` but the filter dict has rpm but not load directly maybe? 
+            # Let's check `raw` for load_pct. But physics engine receives `ecu` dict in run(). 
+            # Recreate expected:
+            egt1 = filt.get("egt_1_c", 0.0)
+            egt2 = filt.get("egt_2_c", 0.0)
+            egt3 = filt.get("egt_3_c", 0.0)
+            egt4 = filt.get("egt_4_c", 0.0)
+            egt5 = filt.get("egt_5_c", 0.0)
+            
+            # Using basic threshold sequential difference (easier than reconstructing base)
+            # Normal drops across components are small (-40, -10, -10, -10). A leak introduces an extra -40 drop.
+            # So if egt1 is way too cold (say < expected), or we can just look at deltas between adjacents!
+            # Normal delta egt1->egt2 is ~40. Leak at turbine makes egt2 drop 40 MORE, so delta becomes ~80.
+            # Normal delta egt2->egt3 is ~10. Leak at DOC makes egt3 drop 40 MORE, so delta becomes ~50.
+            d12 = egt1 - egt2
+            d23 = egt2 - egt3
+            d34 = egt3 - egt4
+            d45 = egt4 - egt5
+            
+            # Re-calculating base is safer:
+            load = ecu.get("load_pct", 50.0)
+            egt_base = EGT_BASE_K + EGT_PER_RPM * (rpm - 1000) + (load / 100.0) * 150
+            t_manifold = egt_base - 273.15
+            t_turbine  = t_manifold - 40.0
+            t_doc      = t_turbine - 10.0
+            t_dpf      = t_doc - 10.0
+            t_scr      = t_dpf - 10.0
+            
+            thresh = 15.0 # If drop is > 15 degrees more than expected, it's a leak
+            
+            if (t_manifold - egt1) > thresh:
+                result.sub_location = "manifold"
+            elif (t_turbine - egt2) > thresh:
+                result.sub_location = "turbine"
+            elif (t_doc - egt3) > thresh:
+                result.sub_location = "doc"
+            elif (t_dpf - egt4) > thresh:
+                result.sub_location = "dpf"
+            elif (t_scr - egt5) > thresh:
+                result.sub_location = "scr"
             else:
                 result.sub_location = "general_exhaust_restriction"
+
 
         return result
 
@@ -344,6 +373,7 @@ class PhysicsEngine:
             "egr_pct":       raw.get("egr_pct", 15.0),
             "coolant_temp_c": raw.get("coolant_temp_c", 88.0),
             "transient":     bool(raw.get("transient", 0)),
+            "load_pct":      raw.get("load_pct", 50.0),
         }
         ra = self.zone_a.run(filt, ecu)
         rb = self.zone_b.run(filt, ecu)
