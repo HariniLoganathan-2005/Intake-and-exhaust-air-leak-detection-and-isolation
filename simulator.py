@@ -58,7 +58,7 @@ class LeakConfig:
     zone_b_severity: float = 0.0   # fraction 0..1, MAP reduction
     zone_c_severity: float = 0.0   # fraction 0..1, EBP increase (leak raises backpressure)
     zone_b_location: str   = "after_intercooler"   # "before_intercooler" | "after_intercooler"
-    zone_c_bank: str       = "upstream"             # "upstream" | "downstream"
+    zone_c_location: str   = "manifold"            # "manifold", "turbine", "doc", "dpf", "scr"
 
 
 @dataclass
@@ -81,6 +81,9 @@ class EngineState:
     ebp_actual: float = 0.0
     egt_1: float = 0.0
     egt_2: float = 0.0
+    egt_3: float = 0.0
+    egt_4: float = 0.0
+    egt_5: float = 0.0
     fuel_rate_gs: float = 0.0
 
     # ECU flags for edge-case suppression
@@ -143,7 +146,7 @@ class EngineSimulator:
             self.leak.zone_b_location = b_location
         elif zone.upper() == "C":
             self.leak.zone_c_severity = severity
-            self.leak.zone_c_bank = c_bank
+            self.leak.zone_c_location = c_bank if c_bank in ["manifold", "turbine", "doc", "dpf", "scr"] else "manifold"
 
     def clear_leak(self, zone: Optional[str] = None):
         """Clear one zone or all zones."""
@@ -208,10 +211,21 @@ class EngineSimulator:
         if s.dpf_regen_active:
             ebp_kpa *= 1.35          # DPF regen raises backpressure naturally
 
-        # 7. EGT pair
+        # 7. EGT chain (temperature progressive drop)
         egt_base = EGT_BASE_K + EGT_PER_RPM * (rpm - 1000) + (load / 100.0) * 150
-        egt_1 = egt_base - 273.15 + rng.normal(0, NOISE_EGT)
-        egt_2 = egt_base - 273.15 + rng.normal(0, NOISE_EGT)
+        
+        # Base expected temps before leak
+        t_manifold = egt_base - 273.15
+        t_turbine  = t_manifold - 40.0
+        t_doc      = t_turbine - 10.0
+        t_dpf      = t_doc - 10.0
+        t_scr      = t_dpf - 10.0
+        
+        egt_1 = t_manifold + rng.normal(0, NOISE_EGT)
+        egt_2 = t_turbine + rng.normal(0, NOISE_EGT)
+        egt_3 = t_doc + rng.normal(0, NOISE_EGT)
+        egt_4 = t_dpf + rng.normal(0, NOISE_EGT)
+        egt_5 = t_scr + rng.normal(0, NOISE_EGT)
 
         # 8. Intake Air Temperature
         iat_c = intercooler_outlet_c + rng.normal(0, NOISE_IAT)
@@ -243,10 +257,31 @@ class EngineSimulator:
         # Zone C — exhaust valve or manifold leak → EBP drops
         if self.leak.zone_c_severity > 0:
             ebp_kpa *= (1.0 - 0.6 * self.leak.zone_c_severity)
-            if self.leak.zone_c_bank == "upstream":
-                egt_1 -= 40 * self.leak.zone_c_severity  # upstream cylinder bank cools
-            else:
-                egt_2 -= 40 * self.leak.zone_c_severity  # downstream bank cools
+            
+            leak_drop = 40.0 * self.leak.zone_c_severity
+            loc = self.leak.zone_c_location
+            
+            # The temperature drops downstream of the leak
+            if loc == "manifold":
+                egt_1 -= leak_drop
+                egt_2 -= leak_drop
+                egt_3 -= leak_drop
+                egt_4 -= leak_drop
+                egt_5 -= leak_drop
+            elif loc == "turbine":
+                egt_2 -= leak_drop
+                egt_3 -= leak_drop
+                egt_4 -= leak_drop
+                egt_5 -= leak_drop
+            elif loc == "doc":
+                egt_3 -= leak_drop
+                egt_4 -= leak_drop
+                egt_5 -= leak_drop
+            elif loc == "dpf":
+                egt_4 -= leak_drop
+                egt_5 -= leak_drop
+            elif loc == "scr":
+                egt_5 -= leak_drop
 
         # ── Add Sensor Noise ──────────────────────────────────────────────────
         maf_gs        += rng.normal(0, NOISE_MAF)
@@ -263,6 +298,9 @@ class EngineSimulator:
         s.ebp_actual               = round(max(0.0, ebp_kpa), 3)
         s.egt_1                    = round(egt_1, 2)
         s.egt_2                    = round(egt_2, 2)
+        s.egt_3                    = round(egt_3, 2)
+        s.egt_4                    = round(egt_4, 2)
+        s.egt_5                    = round(egt_5, 2)
         s.fuel_rate_gs             = round(max(0.0, fuel_gs), 3)
         s.timestamp                = round(self._t, 3)
 
@@ -286,6 +324,9 @@ class EngineSimulator:
             "ebp_kpa":                 state.ebp_actual,
             "egt_1_c":                 state.egt_1,
             "egt_2_c":                 state.egt_2,
+            "egt_3_c":                 state.egt_3,
+            "egt_4_c":                 state.egt_4,
+            "egt_5_c":                 state.egt_5,
             "fuel_rate_gs":            state.fuel_rate_gs,
             "coolant_temp_c":          state.coolant_temp_c,
             "dpf_regen":               int(state.dpf_regen_active),

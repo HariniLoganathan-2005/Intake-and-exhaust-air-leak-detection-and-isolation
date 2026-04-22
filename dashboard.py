@@ -329,6 +329,9 @@ with col_sensors:
     ebp_v   = filt.get("ebp_kpa", 0)
     egt1_v  = filt.get("egt_1_c", 0)
     egt2_v  = filt.get("egt_2_c", 0)
+    egt3_v  = filt.get("egt_3_c", 0)
+    egt4_v  = filt.get("egt_4_c", 0)
+    egt5_v  = filt.get("egt_5_c", 0)
     fuel_v  = filt.get("fuel_rate_gs", 0)
 
     sensor_card("Engine Speed (RPM)",      f"{rpm_v:,.0f}",  "RPM")
@@ -342,8 +345,11 @@ with col_sensors:
     sensor_card("Intercooler Outlet Temp", f"{ic_v:.1f}",    "°C")
     sensor_card("Exhaust Back Pressure",   f"{ebp_v:.2f}",   "kPa",
                 warn=(d.zone == "C" and d.leak_detected))
-    sensor_card("EGT Bank 1",             f"{egt1_v:.1f}",  "°C")
-    sensor_card("EGT Bank 2",             f"{egt2_v:.1f}",  "°C")
+    sensor_card("EGT Manifold",           f"{egt1_v:.1f}",  "°C")
+    sensor_card("EGT Turbine Out",        f"{egt2_v:.1f}",  "°C")
+    sensor_card("EGT DOC Out",            f"{egt3_v:.1f}",  "°C")
+    sensor_card("EGT DPF Out",            f"{egt4_v:.1f}",  "°C")
+    sensor_card("EGT SCR Out",            f"{egt5_v:.1f}",  "°C")
     sensor_card("Fuel Rate",              f"{fuel_v:.2f}",  "g/s")
 
 # ── CENTRE: Residual Gauges ────────────────────────────────────────────────────
@@ -443,6 +449,30 @@ with col_alert:
           <div class="alert-sub">📍 {d.sub_location}</div>
           <div class="alert-action">🔧 {d.action}</div>
         </div>""", unsafe_allow_html=True)
+
+        if d.zone == "C":
+            st.markdown('<div class="control-title" style="margin-top:0.5rem">Exhaust Flow Map</div>', unsafe_allow_html=True)
+            boxes = ["manifold", "turbine", "doc", "dpf", "scr"]
+            labels = ["Manifold", "Turbine", "DOC", "DPF", "SCR"]
+            
+            html = '<div style="display:flex; justify-content:space-between; align-items:center; background:#0f1929; padding:10px; border-radius:8px; margin-bottom:0.75rem;">'
+            for i, b in enumerate(boxes):
+                arrow = "→" if i < len(boxes)-1 else ""
+                # Use a glowing red style if this sub-location is the matched one
+                is_active = (d.sub_location == b)
+                bg_color = "#dc2626" if is_active else "#1e293b"
+                border_color = "#f87171" if is_active else "#475569"
+                shadow = "0 0 12px rgba(220,38,38,0.8)" if is_active else "none"
+                text_color = "#ffffff" if is_active else "#94a3b8"
+                html += f'''
+                    <div style="background:{bg_color}; border:1px solid {border_color}; padding:6px 6px; border-radius:6px; font-size:0.65rem; font-weight:bold; box-shadow:{shadow}; text-align:center; color:{text_color}; flex-grow:1; flex-basis:0;">
+                        {labels[i]}
+                    </div>
+                '''
+                if arrow:
+                    html += f'<div style="color:#64748b; font-size:0.8rem; padding:0 4px; flex-shrink:0;">{arrow}</div>'
+            html += '</div>'
+            st.markdown(html, unsafe_allow_html=True)
 
         # Confidence bar
         conf = d.confidence_pct
@@ -567,10 +597,10 @@ with ctrl_r:
     with lc3:
         sev_c = st.slider("Zone C", 0.0, 1.0, 0.0, 0.05, key="sev_c",
                           help="EBP increase fraction")
-        bank_c = st.selectbox("Bank", ["upstream", "downstream"], key="bank_c")
+        loc_c = st.selectbox("Location", ["manifold", "turbine", "doc", "dpf", "scr"], key="loc_c")
         if st.button("Inject C", key="inj_c",
                      type="primary" if sev_c > 0 else "secondary"):
-            sim.inject_leak("C", sev_c, c_bank=bank_c)
+            sim.inject_leak("C", sev_c, c_bank=loc_c)
 
     if st.button("🔴 CLEAR ALL LEAKS", key="clear_all", use_container_width=True):
         sim.clear_leak()
