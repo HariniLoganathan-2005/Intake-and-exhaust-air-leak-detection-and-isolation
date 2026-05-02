@@ -49,6 +49,9 @@ def _write_state(decision: FusionDecision, raw: dict, filt: dict):
         "ebp_kpa":              filt.get("ebp_kpa", 0.0),
         "egt_1_c":              filt.get("egt_1_c", 0.0),
         "egt_2_c":              filt.get("egt_2_c", 0.0),
+        "egt_3_c":              filt.get("egt_3_c", 0.0),
+        "egt_4_c":              filt.get("egt_4_c", 0.0),
+        "egt_5_c":              filt.get("egt_5_c", 0.0),
         "fuel_rate_gs":         filt.get("fuel_rate_gs", 0.0),
         # ECU flags
         "dpf_regen":            raw.get("dpf_regen", 0),
@@ -192,7 +195,7 @@ def run_demo(sim: EngineSimulator, engine_thread: EngineThread,
     print("\n[DEMO] ── Phase 4: Clearing → Injecting Zone C leak (30%) ──")
     sim.clear_leak()
     time.sleep(3)
-    sim.inject_leak("C", severity=0.30, c_bank="upstream")
+    sim.inject_leak("C", severity=0.30, c_location="between_turbine_and_doc")
     time.sleep(20)
 
     print("\n[DEMO] ── Phase 5: Clearing all leaks — back to nominal ──")

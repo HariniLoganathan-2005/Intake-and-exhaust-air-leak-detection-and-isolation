@@ -139,6 +139,48 @@ st.markdown("""
   .alert-action    { font-size: 0.78rem; color: #e2e8f0; margin-top: 8px; padding-top: 8px;
                      border-top: 1px solid #1e293b; }
 
+  /* ── Exhaust Flow Map ── */
+  .flow-map-container {
+    background: #0f1929;
+    border: 1px solid #1e3a5f;
+    border-radius: 10px;
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .flow-node {
+    padding: 0.5rem 0.2rem;
+    border-radius: 6px;
+    border: 1px solid #334155;
+    background: #1e293b;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #cbd5e1;
+    text-align: center;
+    flex: 1;
+    margin: 0 0.1rem;
+  }
+  .flow-node.active {
+    background: #dc2626;
+    color: #ffffff;
+    border-color: #f87171;
+    box-shadow: 0 0 12px rgba(220, 38, 38, 0.4);
+  }
+  .flow-arrow {
+    color: #64748b;
+    font-size: 0.8rem;
+    margin: 0 0.1rem;
+    transition: all 0.3s ease;
+  }
+  .flow-arrow.active {
+    color: #f87171;
+    font-weight: 900;
+    text-shadow: 0 0 10px rgba(220, 38, 38, 0.8);
+    transform: scale(1.4);
+  }
+
   /* ── Control panel ── */
   .control-section {
     background: #0d1526;
@@ -329,6 +371,9 @@ with col_sensors:
     ebp_v   = filt.get("ebp_kpa", 0)
     egt1_v  = filt.get("egt_1_c", 0)
     egt2_v  = filt.get("egt_2_c", 0)
+    egt3_v  = filt.get("egt_3_c", 0)
+    egt4_v  = filt.get("egt_4_c", 0)
+    egt5_v  = filt.get("egt_5_c", 0)
     fuel_v  = filt.get("fuel_rate_gs", 0)
 
     sensor_card("Engine Speed (RPM)",      f"{rpm_v:,.0f}",  "RPM")
@@ -342,8 +387,11 @@ with col_sensors:
     sensor_card("Intercooler Outlet Temp", f"{ic_v:.1f}",    "°C")
     sensor_card("Exhaust Back Pressure",   f"{ebp_v:.2f}",   "kPa",
                 warn=(d.zone == "C" and d.leak_detected))
-    sensor_card("EGT Bank 1",             f"{egt1_v:.1f}",  "°C")
-    sensor_card("EGT Bank 2",             f"{egt2_v:.1f}",  "°C")
+    sensor_card("EGT Manifold",           f"{egt1_v:.1f}",  "°C")
+    sensor_card("EGT Turbine Outlet",     f"{egt2_v:.1f}",  "°C")
+    sensor_card("EGT DOC Outlet",         f"{egt3_v:.1f}",  "°C")
+    sensor_card("EGT DPF Outlet",         f"{egt4_v:.1f}",  "°C")
+    sensor_card("EGT SCR Outlet",         f"{egt5_v:.1f}",  "°C")
     sensor_card("Fuel Rate",              f"{fuel_v:.2f}",  "g/s")
 
 # ── CENTRE: Residual Gauges ────────────────────────────────────────────────────
@@ -440,9 +488,52 @@ with col_alert:
             Status: <b style="color:#e2e8f0">{status}</b> &nbsp;|&nbsp;
             Triggered by: <b style="color:#e2e8f0">{d.triggered_by.upper()}</b>
           </div>
-          <div class="alert-sub">📍 {d.sub_location}</div>
+          <div class="alert-sub">📍 {d.sub_location.replace('_', ' ').title().replace('Doc', 'DOC').replace('Dpf', 'DPF').replace('Scr', 'SCR')}</div>
           <div class="alert-action">🔧 {d.action}</div>
         </div>""", unsafe_allow_html=True)
+
+        if d.zone == "C":
+            # Map sub-location to the faulty flow node and arrow index
+            fault_map = {
+                "exhaust_manifold": {"nodes": ["Manifold"], "arrows": []},
+                "between_manifold_and_turbine": {"nodes": ["Turbine"], "arrows": [0]},
+                "between_turbine_and_doc": {"nodes": ["DOC"], "arrows": [1]},
+                "between_doc_and_dpf": {"nodes": ["DPF"], "arrows": [2]},
+                "between_dpf_and_scr": {"nodes": ["SCR"], "arrows": [3]}
+            }
+            active_info = fault_map.get(d.sub_location, {"nodes": [], "arrows": []})
+            
+            nodes = ["Manifold", "Turbine", "DOC", "DPF", "SCR"]
+            flow_html = '<div class="control-title" style="margin-top: 10px;">EXHAUST FLOW MAP</div>'
+            flow_html += '<div class="flow-map-container">'
+            for i, node in enumerate(nodes):
+                is_active_node = "active" if node in active_info["nodes"] else ""
+                flow_html += f'<div class="flow-node {is_active_node}">{node}</div>'
+                if i < len(nodes) - 1:
+                    is_active_arrow = "active" if i in active_info["arrows"] else ""
+                    flow_html += f'<div class="flow-arrow {is_active_arrow}">&#8594;</div>'
+            flow_html += '</div>'
+            st.markdown(flow_html, unsafe_allow_html=True)
+
+        elif d.zone == "B":
+            # Map sub-location to the faulty flow node and arrow index
+            fault_map = {
+                "before_intercooler_hose_or_turbo_outlet": {"nodes": ["Intercooler"], "arrows": [0]},
+                "after_intercooler_hose_or_clamp": {"nodes": ["Manifold"], "arrows": [1]},
+            }
+            active_info = fault_map.get(d.sub_location, {"nodes": [], "arrows": []})
+            
+            nodes = ["Compressor", "Intercooler", "Manifold"]
+            flow_html = '<div class="control-title" style="margin-top: 10px;">CHARGE AIR FLOW MAP</div>'
+            flow_html += '<div class="flow-map-container">'
+            for i, node in enumerate(nodes):
+                is_active_node = "active" if node in active_info["nodes"] else ""
+                flow_html += f'<div class="flow-node {is_active_node}">{node}</div>'
+                if i < len(nodes) - 1:
+                    is_active_arrow = "active" if i in active_info["arrows"] else ""
+                    flow_html += f'<div class="flow-arrow {is_active_arrow}">&#8594;</div>'
+            flow_html += '</div>'
+            st.markdown(flow_html, unsafe_allow_html=True)
 
         # Confidence bar
         conf = d.confidence_pct
@@ -567,10 +658,13 @@ with ctrl_r:
     with lc3:
         sev_c = st.slider("Zone C", 0.0, 1.0, 0.0, 0.05, key="sev_c",
                           help="EBP increase fraction")
-        bank_c = st.selectbox("Bank", ["upstream", "downstream"], key="bank_c")
+        loc_c = st.selectbox("Location", [
+            "exhaust_manifold", "manifold_to_turbine", 
+            "turbine_to_doc", "doc_to_dpf", "dpf_to_scr"
+        ], key="loc_c")
         if st.button("Inject C", key="inj_c",
                      type="primary" if sev_c > 0 else "secondary"):
-            sim.inject_leak("C", sev_c, c_bank=bank_c)
+            sim.inject_leak("C", sev_c, c_location=loc_c)
 
     if st.button("🔴 CLEAR ALL LEAKS", key="clear_all", use_container_width=True):
         sim.clear_leak()

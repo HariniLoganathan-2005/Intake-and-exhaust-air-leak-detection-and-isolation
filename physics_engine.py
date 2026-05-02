@@ -32,6 +32,7 @@ from simulator import (
     TURBO_RPM_BREAKPOINTS, TURBO_PRESSURE_RATIO,
     EBP_COEFF_FUEL, EBP_COEFF_RPM, EBP_INTERCEPT,
     DISPLACEMENT_L, INTERCOOLER_EFFICIENCY,
+    EGT_BASE_K, EGT_PER_RPM,
     _air_density, _ve_lookup, _turbo_pressure_ratio, _turbo_comp_temp_rise,
 )
 
@@ -301,22 +302,32 @@ class ZoneCDetector:
         # Drift is informational — never suppresses a genuine residual flag
         if residual_pct >= ZONE_C_EBP_THRESHOLD_PCT:
             result.flag = True
-            # Sub-location: which EGT sensor is reading abnormally low.
-            # The simulator cools egt_1 for an upstream bank leak and egt_2 for downstream.
-            # A cooled sensor reads LOWER than its pair → negative delta for upstream.
-            # delta = egt1 − egt2:
-            #   delta << 0  → egt1 is low  → upstream  bank exhaust port / manifold crack
-            #   delta >> 0  → egt2 is low  → downstream bank / DPF or catalyst section
-            #   |delta| small → no clear lateralisation → general restriction / EBP sensor
+            
             egt1  = filt.get("egt_1_c", 0.0)
             egt2  = filt.get("egt_2_c", 0.0)
-            delta = egt1 - egt2
-            if delta < -EGT_DELTA_THRESHOLD_C:
-                # egt1 is significantly lower → upstream bank is losing exhaust heat
-                result.sub_location = "upstream_bank_cylinder_exhaust_ports"
-            elif delta > EGT_DELTA_THRESHOLD_C:
-                # egt2 is significantly lower → downstream / DPF or catalyst section
-                result.sub_location = "downstream_bank_DPF_or_catalyst"
+            egt3  = filt.get("egt_3_c", 0.0)
+            egt4  = filt.get("egt_4_c", 0.0)
+            egt5  = filt.get("egt_5_c", 0.0)
+            
+            rpm = filt.get("rpm", 1000.0)
+            load = filt.get("load_pct", 0.0)
+            egt_base_expect = EGT_BASE_K + EGT_PER_RPM * (rpm - 1000) + (load / 100.0) * 150 - 273.15
+            
+            drop_12 = egt1 - egt2    # normally ~150°C
+            drop_23 = egt2 - egt3    # normally ~70°C
+            drop_34 = egt3 - egt4    # normally ~80°C
+            drop_45 = egt4 - egt5    # normally ~60°C
+            
+            if egt1 < (egt_base_expect - 15):
+                result.sub_location = "exhaust_manifold"
+            elif drop_12 > (150 + 15):
+                result.sub_location = "between_manifold_and_turbine"
+            elif drop_23 > (70 + 15):
+                result.sub_location = "between_turbine_and_doc"
+            elif drop_34 > (80 + 15):
+                result.sub_location = "between_doc_and_dpf"
+            elif drop_45 > (60 + 15):
+                result.sub_location = "between_dpf_and_scr"
             else:
                 result.sub_location = "general_exhaust_restriction"
 

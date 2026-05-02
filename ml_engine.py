@@ -45,6 +45,9 @@ FEATURE_NAMES = [
     "boost_temp_per_map",
     "egt1_per_rpm",
     "egt2_per_rpm",
+    "egt3_per_rpm",
+    "egt4_per_rpm",
+    "egt5_per_rpm",
     "maf_per_map",
 ]
 
@@ -56,6 +59,9 @@ FEATURE_ZONE = {
     "boost_temp_per_map": "B",
     "egt1_per_rpm":       "C",
     "egt2_per_rpm":       "C",
+    "egt3_per_rpm":       "C",
+    "egt4_per_rpm":       "C",
+    "egt5_per_rpm":       "C",
     "maf_per_map":        "A",
 }
 
@@ -68,10 +74,10 @@ THRESH_PATH= MODEL_DIR / "threshold.pkl"
 # Anomaly threshold: set at 99th percentile of training reconstruction errors
 THRESHOLD_PERCENTILE = 99
 
-# MLP architecture — shallow encoder-decoder through a 3-node bottleneck
-ENCODER_LAYERS = (7, 5, 3)
-DECODER_LAYERS = (3, 5, 7)
-HIDDEN_LAYERS  = ENCODER_LAYERS[1:] + DECODER_LAYERS[1:]   # (5, 3, 5)
+# MLP architecture — shallow encoder-decoder through a 4-node bottleneck
+ENCODER_LAYERS = (10, 7, 4)
+DECODER_LAYERS = (4, 7, 10)
+HIDDEN_LAYERS  = ENCODER_LAYERS[1:] + DECODER_LAYERS[1:]   # (7, 4, 7)
 
 
 @dataclass
@@ -99,6 +105,9 @@ def _extract_features(row: dict) -> Optional[np.ndarray]:
         boost_t   = float(row.get("boost_temp_c",    0))
         egt1      = float(row.get("egt_1_c",         0))
         egt2      = float(row.get("egt_2_c",         0))
+        egt3      = float(row.get("egt_3_c",         0))
+        egt4      = float(row.get("egt_4_c",         0))
+        egt5      = float(row.get("egt_5_c",         0))
 
         if any(v <= 0 for v in [rpm, maf, map_kpa, fuel]):
             return None
@@ -110,6 +119,9 @@ def _extract_features(row: dict) -> Optional[np.ndarray]:
             boost_t / map_kpa,
             egt1   / rpm,
             egt2   / rpm,
+            egt3   / rpm,
+            egt4   / rpm,
+            egt5   / rpm,
             maf    / map_kpa,
         ], dtype=np.float32)
 
@@ -137,7 +149,7 @@ def _build_model() -> MLPRegressor:
     )
 
 
-def train_autoencoder(df: pd.DataFrame, save: bool = True) -> Tuple[float, "MLRegressor"]:
+def train_autoencoder(df: pd.DataFrame, save: bool = True) -> Tuple[float, MLPRegressor]:
     """
     Train the autoencoder on healthy simulator data.
 

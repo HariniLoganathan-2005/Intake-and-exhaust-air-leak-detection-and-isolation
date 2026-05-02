@@ -41,10 +41,16 @@ ACTION_MAP = {
             "Check hoses, clamps, and connections in the charge-air cooler circuit.",
     },
     "C": {
-        "upstream_bank_cylinder_exhaust_ports":
-            "Inspect upstream exhaust manifold gaskets, ports, and flex pipes.",
-        "downstream_bank_DPF_or_catalyst":
-            "Inspect DPF canister, catalyst, and downstream exhaust connections.",
+        "exhaust_manifold":
+            "Inspect exhaust manifold for direct cracks, blown gaskets, or loose bolts.",
+        "between_manifold_and_turbine":
+            "Inspect connection between exhaust manifold outlet and turbo turbine inlet.",
+        "between_turbine_and_doc":
+            "Inspect piping and clamps between turbocharger turbine outlet and DOC inlet.",
+        "between_doc_and_dpf":
+            "Inspect connections and joints specifically between the DOC and DPF units.",
+        "between_dpf_and_scr":
+            "Inspect piping and clamped connections between the DPF outlet and SCR inlet.",
         "general_exhaust_restriction":
             "Perform exhaust back-pressure test; inspect DPF condition and EBP sensor.",
         "unknown":
