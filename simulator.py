@@ -84,6 +84,9 @@ class EngineState:
     egt_3: float = 0.0
     egt_4: float = 0.0
     egt_5: float = 0.0
+    egt_3: float = 0.0
+    egt_4: float = 0.0
+    egt_5: float = 0.0
     fuel_rate_gs: float = 0.0
 
     # ECU flags for edge-case suppression
@@ -294,6 +297,9 @@ class EngineSimulator:
         s.egt_3                    = round(egt_3, 2)
         s.egt_4                    = round(egt_4, 2)
         s.egt_5                    = round(egt_5, 2)
+        s.egt_3                    = round(egt_3, 2)
+        s.egt_4                    = round(egt_4, 2)
+        s.egt_5                    = round(egt_5, 2)
         s.fuel_rate_gs             = round(max(0.0, fuel_gs), 3)
         s.timestamp                = round(self._t, 3)
 
@@ -317,6 +323,9 @@ class EngineSimulator:
             "ebp_kpa":                 state.ebp_actual,
             "egt_1_c":                 state.egt_1,
             "egt_2_c":                 state.egt_2,
+            "egt_3_c":                 state.egt_3,
+            "egt_4_c":                 state.egt_4,
+            "egt_5_c":                 state.egt_5,
             "egt_3_c":                 state.egt_3,
             "egt_4_c":                 state.egt_4,
             "egt_5_c":                 state.egt_5,

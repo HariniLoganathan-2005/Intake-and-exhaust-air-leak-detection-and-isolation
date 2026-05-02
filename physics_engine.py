@@ -331,6 +331,7 @@ class ZoneCDetector:
             else:
                 result.sub_location = "general_exhaust_restriction"
 
+
         return result
 
 
@@ -355,6 +356,7 @@ class PhysicsEngine:
             "egr_pct":       raw.get("egr_pct", 15.0),
             "coolant_temp_c": raw.get("coolant_temp_c", 88.0),
             "transient":     bool(raw.get("transient", 0)),
+            "load_pct":      raw.get("load_pct", 50.0),
         }
         ra = self.zone_a.run(filt, ecu)
         rb = self.zone_b.run(filt, ecu)
