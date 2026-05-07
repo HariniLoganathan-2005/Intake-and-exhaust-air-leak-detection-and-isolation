@@ -1,0 +1,19 @@
+# Python Cache
+__pycache__/
+*.pyc
+
+# Local Logs & Data
+logs/
+run_log.csv
+live_state.json
+
+# Machine Learning Models (Optional)
+# Remove the '#' below if you want to ignore model files
+# models/*.pkl
+
+# Environment & IDE
+.vscode/
+.idea/
+venv/
+env/
+.DS_Store

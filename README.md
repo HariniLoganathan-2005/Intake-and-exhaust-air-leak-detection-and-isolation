@@ -78,7 +78,7 @@ Wait for the terminal to print: [ML] Training complete.
 Start the real-time Streamlit interface:
 
 ```Bash
-python -m streamlit run dashboard.py --server.port 8501
+python -m streamlit run dashboard.py 1
 ```
 This will open the interactive UI in your web browser. You can now adjust the RPM/Load sliders, inject leaks, and watch the Hybrid Fusion system detect and isolate the faults in real-time.
 
