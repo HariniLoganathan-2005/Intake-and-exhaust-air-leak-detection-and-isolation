@@ -89,6 +89,10 @@ class FusionDecision:
     action:    str  = "No action required — system nominal."
     drift:     bool = False
 
+    # Cascade / confirmation context
+    cascade_zones: str  = ""   # e.g. "Zone C suppressed (secondary EBP effect from B)"
+    confirmed_by:  str  = ""   # e.g. "lambda_high+n_turbo_high"
+
     # Suppression
     suppressed:           bool = False
     suppression_reason:   str  = ""
@@ -198,12 +202,29 @@ def fuse(
         decision.expected_value= best_physics.expected
         decision.actual_value  = best_physics.actual
         decision.drift         = best_physics.drift
+        decision.confirmed_by  = best_physics.confirmed_by
 
         zone_actions = ACTION_MAP.get(best_physics.zone, {})
-        decision.action = zone_actions.get(
+        base_action = zone_actions.get(
             best_physics.sub_location,
             zone_actions.get("unknown", "Inspect the flagged zone.")
         )
+
+        # Append cascade context note when a secondary zone was suppressed
+        cascade_note = ""
+        if best_physics.cascade_effect:
+            if "EBP" in best_physics.cascade_effect:
+                cascade_note = (
+                    " [Note: Zone C EBP drop observed but suppressed — secondary cascade "
+                    "from Zone B (less fuel burned → less exhaust mass).]"
+                )
+            elif "MAP" in best_physics.cascade_effect:
+                cascade_note = (
+                    " [Note: Zone B MAP drop observed but suppressed — secondary cascade "
+                    "from Zone C (turbo loses exhaust energy → less boost).]"
+                )
+        decision.action        = base_action + cascade_note
+        decision.cascade_zones = best_physics.cascade_effect
 
     elif ml.flag and not best_physics:
         decision.zone         = ml.anomaly_zone

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: transparent;
+    font-family: 'Inter', sans-serif;
+    color: #e2e8f0;
+    overflow: hidden;
+  }
+  .container {
+    width: 100%;
+    height: 55vh;
+    min-height: 500px;
+    max-height: 800px;
+    position: relative;
+    box-sizing: border-box;
+  }
+  svg {
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5));
+  }
+  
+  /* Boxes and text */
+  .box {
+    fill: rgba(15, 23, 42, 0.8);
+    stroke: rgba(148, 163, 184, 0.6);
+    stroke-width: 3;
+    rx: 8;
+  }
+  .box-label {
+    font-size: 20px;
+    font-weight: bold;
+    fill: #f8fafc;
+    text-anchor: middle;
+    dominant-baseline: central;
+    letter-spacing: 0.5px;
+  }
+  .box-label-small {
+    font-size: 16px;
+    fill: #94a3b8;
+    text-anchor: middle;
+  }
+  .data-label {
+    font-size: 18px;
+    font-family: monospace;
+    font-weight: bold;
+    fill: #facc15;
+  }
+
+  /* Pipes */
+  .track {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.08);
+    stroke-width: 12;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .flow-dots {
+    fill: none;
+    stroke-width: 12;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    /* dasharray handled by JS for density */
+  }
+  
+  /* Colors */
+  .color-fresh { stroke: #3b82f6; }
+  .color-hot   { stroke: #f87171; }
+  .color-cool  { stroke: #4ade80; }
+  .color-exh   { stroke: #c084fc; }
+
+  /* Engine Animations */
+  #piston {
+    /* Driven by JS to match RPM */
+  }
+  #combustion {
+    opacity: 0;
+  }
+
+  /* Leak Animations */
+  .leak-particle {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    opacity: 0;
+    pointer-events: none;
+    box-shadow: 0 0 10px currentColor;
+  }
+  
+  @keyframes vent {
+    0% { transform: translate(0, 0) scale(1); opacity: 1; }
+    100% { transform: translate(var(--dx), var(--dy)) scale(3); opacity: 0; }
+  }
+
+  #leak-container {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+  }
+
+  /* Legend */
+  .legend {
+    position: absolute;
+    bottom: 10px;
+    left: 20px;
+    display: flex;
+    gap: 20px;
+    font-size: 14px;
+    background: rgba(15, 25, 41, 0.9);
+    padding: 12px 20px;
+    border-radius: 30px;
+    border: 1px solid rgba(255,255,255,0.15);
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+  }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-weight: bold; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; }
+</style>
+</head>
+<body>
+
+<div class="container" id="main-container">
+  <svg viewBox="0 0 1600 700" preserveAspectRatio="xMidYMid meet">
+    <!-- DEFINITIONS -->
+    <defs>
+      <radialGradient id="fire">
+        <stop offset="0%" stop-color="#fb923c" stop-opacity="1"/>
+        <stop offset="30%" stop-color="#ef4444" stop-opacity="0.8"/>
+        <stop offset="100%" stop-color="#7f1d1d" stop-opacity="0"/>
+      </radialGradient>
+      
+      <filter id="motion-blur" x="-50%" y="-50%" width="200%" height="200%">
+        <!-- Dynamic blur applied via JS when speed is high -->
+        <feGaussianBlur id="blur-filter" stdDeviation="0" />
+      </filter>
+
+      <g id="rotor">
+        <circle cx="0" cy="0" r="35" fill="rgba(30,41,59,0.9)" stroke="rgba(148,163,184,0.8)" stroke-width="3"/>
+        <path d="M-28,-28 L28,28 M-28,28 L28,-28 M-38,0 L38,0 M0,-38 L0,38" stroke="rgba(255,255,255,0.7)" stroke-width="6"/>
+        <circle cx="0" cy="0" r="8" fill="white"/>
+      </g>
+    </defs>
+
+    <!-- BACKGROUND TRACKS -->
+    <path class="track" d="M 60 180 L 680 180" />
+    <path class="track" d="M 680 180 L 1150 180" />
+    <path class="track" d="M 1350 180 L 1420 180 L 1280 400" />
+    <path class="track" d="M 1080 400 L 920 400" />
+    <path class="track" d="M 720 400 L 520 400" />
+    <path class="track" d="M 400 360 L 630 280" />
+    <path class="track" d="M 630 300 L 290 560" />
+    <path class="track" d="M 370 560 L 1450 560" />
+
+    <!-- FLOW DOTS -->
+    <!-- Fresh Air -->
+    <path class="flow-dots forward color-fresh" d="M 60 180 L 680 180" />
+    
+    <!-- Hot/Compressed Air -->
+    <path class="flow-dots forward color-hot" d="M 680 180 L 1150 180" />
+    
+    <!-- Cooled Dense Air -->
+    <path class="flow-dots forward color-cool" d="M 1350 180 L 1420 180 L 1280 400" />
+    <path class="flow-dots reverse color-cool" d="M 920 400 L 1080 400" /> <!-- Reversed -->
+
+    <!-- Exhaust -->
+    <path class="flow-dots reverse color-exh" d="M 520 400 L 720 400" /> <!-- Reversed -->
+    <path class="flow-dots forward color-exh" d="M 400 360 L 630 280" />
+    <path class="flow-dots forward color-exh" d="M 630 300 L 290 560" />
+    <path class="flow-dots forward color-exh" d="M 370 560 L 1450 560" />
+
+    <!-- COMPONENTS -->
+    <!-- Air Filter -->
+    <rect class="box" x="120" y="140" width="160" height="80" />
+    <text class="box-label" x="200" y="180">Air Filter</text>
+    
+    <!-- MAF Sensor -->
+    <rect class="box" x="380" y="140" width="120" height="80" />
+    <text class="box-label" x="440" y="180">MAF</text>
+
+    <!-- Intercooler -->
+    <rect class="box" x="1150" y="140" width="200" height="80" />
+    <text class="box-label" x="1250" y="180">Intercooler</text>
+
+    <!-- Intake Manifold -->
+    <rect class="box" x="1080" y="360" width="200" height="80" />
+    <text class="box-label" x="1180" y="400">Intake Manifold</text>
+
+    <!-- Exh Manifold -->
+    <rect class="box" x="320" y="360" width="200" height="80" />
+    <text class="box-label" x="420" y="400">Exh. Manifold</text>
+
+    <!-- DOC, DPF, SCR, Tailpipe -->
+    <rect class="box" x="250" y="520" width="120" height="80" />
+    <text class="box-label" x="310" y="560">DOC</text>
+    
+    <rect class="box" x="470" y="520" width="120" height="80" />
+    <text class="box-label" x="530" y="560">DPF</text>
+    
+    <rect class="box" x="740" y="520" width="120" height="80" />
+    <text class="box-label" x="800" y="560">SCR</text>
+    
+    <rect class="box" x="1010" y="520" width="140" height="80" />
+    <text class="box-label" x="1080" y="560">Tailpipe</text>
+
+    <!-- ENGINE CYLINDER -->
+    <g id="engine-block">
+      <!-- Outer block -->
+      <rect class="box" x="720" y="240" width="200" height="220" />
+      <text class="box-label" x="820" y="320">Engine</text>
+      
+      <!-- Injector tip -->
+      <line x1="820" y1="200" x2="820" y2="240" stroke="#cbd5e1" stroke-width="8" />
+      <rect x="805" y="170" width="30" height="30" fill="#64748b" rx="4" />
+      <text class="box-label-small" x="820" y="150">Injector</text>
+      
+      <!-- Combustion Flash -->
+      <circle id="combustion" cx="820" cy="270" r="50" fill="url(#fire)" />
+      
+      <!-- Piston -->
+      <rect id="piston" x="740" y="400" width="160" height="50" fill="#e2e8f0" rx="4" stroke="#94a3b8" stroke-width="2"/>
+    </g>
+
+    <!-- TURBOS -->
+    <!-- Shaft -->
+    <line x1="630" y1="220" x2="630" y2="260" stroke="#cbd5e1" stroke-width="8" stroke-dasharray="8 8"/>
+    <polygon points="615,205 645,205 630,185" fill="#94a3b8"/>
+    <polygon points="615,275 645,275 630,295" fill="#94a3b8"/>
+    
+    <!-- Rotors -->
+    <g transform="translate(630,180)">
+      <use href="#rotor" id="compressor-wheel" filter="url(#motion-blur)"/>
+    </g>
+    <text class="box-label-small" x="630" y="120">Compressor</text>
+    
+    <g transform="translate(630,300)">
+      <use href="#rotor" id="turbine-wheel" filter="url(#motion-blur)"/>
+    </g>
+    <text class="box-label-small" x="630" y="360">Turbine</text>
+    
+    <!-- Live Turbo RPM Readout -->
+    <text class="data-label" id="turbo-rpm-text" x="630" y="90">0 RPM</text>
+
+  </svg>
+
+  <div id="leak-container"></div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="dot" style="background:#3b82f6"></div> Fresh Air</div>
+    <div class="legend-item"><div class="dot" style="background:#f87171"></div> Hot/Compressed</div>
+    <div class="legend-item"><div class="dot" style="background:#4ade80"></div> Cooled Dense</div>
+    <div class="legend-item"><div class="dot" style="background:#c084fc"></div> Treated Exhaust</div>
+  </div>
+</div>
+
+<script>
+  const urlParams = new URLSearchParams(window.location.search);
+  const port = urlParams.get('port') || window.parent.stPort || 8502;
+  
+  const forwardPaths = Array.from(document.querySelectorAll('.forward'));
+  const reversePaths = Array.from(document.querySelectorAll('.reverse'));
+  const piston = document.getElementById('piston');
+  const combustion = document.getElementById('combustion');
+  const compWheel = document.getElementById('compressor-wheel');
+  const turbWheel = document.getElementById('turbine-wheel');
+  const blurFilter = document.getElementById('blur-filter');
+  const turboText = document.getElementById('turbo-rpm-text');
+  const leakContainer = document.getElementById('leak-container');
+  
+  // Interpolation targets
+  let state = {
+    rpm: 800,
+    maf: 50,
+    n_turbo: 20000,
+    leak_zone: null,
+    leak_sub: null,
+    status: "WARMING_UP"
+  };
+  
+  let current = {
+    rpm: 800,
+    maf: 50,
+    n_turbo: 20000
+  };
+
+  // Animation variables
+  let particleOffset = 0;
+  let turboAngle = 0;
+  let enginePhase = 0; // 0 to 1 cycle
+  
+  // Leak tracking
+  let lastLeakZone = null;
+  let lastLeakSub = null;
+  let leakInterval = null;
+
+  function spawnLeakParticles(x, y, color) {
+    for (let i = 0; i < 4; i++) {
+      const p = document.createElement('div');
+      p.className = 'leak-particle';
+      p.style.color = color;
+      p.style.background = color;
+      p.style.left = x + '%';
+      p.style.top = y + '%';
+      
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 50 + Math.random() * 80;
+      p.style.setProperty('--dx', Math.cos(angle) * dist + 'px');
+      p.style.setProperty('--dy', Math.sin(angle) * dist - 50 + 'px');
+      p.style.animation = `vent ${0.4 + Math.random() * 0.4}s ease-out forwards`;
+      
+      leakContainer.appendChild(p);
+      setTimeout(() => p.remove(), 1000);
+    }
+  }
+
+  function startLeak(zone, sub) {
+    if (leakInterval) clearInterval(leakInterval);
+    
+    // Mapping to responsive percentages
+    let lx = 50, ly = 50, color = '#ffffff';
+    
+    if (zone === 'A') {
+      lx = 20; ly = 25; color = '#3b82f6';
+    } else if (zone === 'B') {
+      if (sub.includes('before')) { lx = 55; ly = 25; color = '#f87171'; }
+      else { lx = 80; ly = 40; color = '#4ade80'; }
+    } else if (zone === 'C') {
+      color = '#c084fc';
+      if (sub.includes('manifold')) { lx = 26; ly = 55; }
+      else if (sub.includes('turbine')) { lx = 35; ly = 42; }
+      else if (sub.includes('doc')) { lx = 20; ly = 75; }
+      else if (sub.includes('dpf')) { lx = 35; ly = 75; }
+      else { lx = 55; ly = 75; }
+    }
+
+    leakInterval = setInterval(() => spawnLeakParticles(lx, ly, color), 80);
+  }
+
+  function stopLeak() {
+    if (leakInterval) {
+      clearInterval(leakInterval);
+      leakInterval = null;
+    }
+  }
+
+  async function pollState() {
+    try {
+      const res = await fetch(`http://localhost:${port}/state.json`);
+      if (res.ok) {
+        const data = await res.json();
+        state.rpm = data.rpm || 800;
+        state.maf = data.maf || 50;
+        state.n_turbo = data.n_turbo || 20000;
+        state.leak_zone = data.leak_zone;
+        state.leak_sub = data.leak_sub;
+        state.status = data.status;
+      }
+    } catch (e) {}
+  }
+
+  setInterval(pollState, 250);
+
+  // Main Render Loop (60 FPS)
+  let lastTime = performance.now();
+  
+  function renderFrame(time) {
+    const dt = (time - lastTime) / 1000;
+    lastTime = time;
+
+    // Smooth Interpolation (Lerp over ~0.5 seconds)
+    const lerp = 4.0 * dt;
+    current.rpm += (state.rpm - current.rpm) * lerp;
+    current.maf += (state.maf - current.maf) * lerp;
+    current.n_turbo += (state.n_turbo - current.n_turbo) * lerp;
+
+    // --- Particle Animation ---
+    // Velocity scales with RPM
+    const particleSpeed = (current.rpm / 2000) * 150; // pixels per second
+    particleOffset -= particleSpeed * dt;
+    if (particleOffset < -1000) particleOffset += 1000; // avoid large numbers
+    
+    // Density scales with MAF (higher MAF = smaller gap)
+    // Gap base = 50. At 200g/s, gap = 20.
+    const gap = Math.max(16, 80 - (current.maf * 0.25));
+    const dash = `12 ${gap}`;
+
+    forwardPaths.forEach(p => {
+        p.style.strokeDashoffset = particleOffset;
+        p.style.strokeDasharray = dash;
+    });
+    reversePaths.forEach(p => {
+        p.style.strokeDashoffset = -particleOffset;
+        p.style.strokeDasharray = dash;
+    });
+
+    // --- Turbo Animation ---
+    // n_turbo can be up to 120,000 RPM. We scale it for visual rotation
+    const visualTurboRps = (current.n_turbo / 60) * 0.1; // Scale down for monitor limits
+    turboAngle += visualTurboRps * 360 * dt;
+    
+    const rotStr = `rotate(${turboAngle})`;
+    compWheel.setAttribute('transform', rotStr);
+    turbWheel.setAttribute('transform', rotStr);
+
+    // Motion blur if turbo is screaming (> 80k RPM)
+    if (current.n_turbo > 70000) {
+        blurFilter.setAttribute('stdDeviation', `0 ${(current.n_turbo - 70000) / 10000}`);
+    } else {
+        blurFilter.setAttribute('stdDeviation', `0 0`);
+    }
+    turboText.textContent = `${Math.round(current.n_turbo).toLocaleString()} RPM`;
+
+    // --- Engine Cylinder Animation ---
+    // 1 cycle = 2 piston strokes (down-up-down-up)
+    // Scale down the physical RPS to a visually pleasing frame rate to prevent high-frequency aliasing ("strobing" that looks like rotation)
+    const visualEngineRps = (current.rpm / 3000) * 3; // Max 3 cycles per sec
+    enginePhase += visualEngineRps * dt;
+    if (enginePhase >= 1) enginePhase -= 1; // loop 0..1
+
+    // Piston height: simple sine wave mapping.
+    // 1 stroke per cycle. enginePhase 0 -> top, 0.5 -> bottom
+    const strokeAmt = Math.cos(enginePhase * Math.PI * 2); // 1 = top, -1 = bottom
+    const yOffset = -90 * ((strokeAmt + 1) / 2); // 0 to -90px
+    piston.setAttribute('transform', `translate(0, ${yOffset})`);
+
+    // Combustion flash precisely at Top Dead Center (phase 0 or 1)
+    if (enginePhase < 0.15) {
+        combustion.style.opacity = 1.0 - (enginePhase / 0.15);
+    } else if (enginePhase > 0.85) {
+        combustion.style.opacity = (enginePhase - 0.85) / 0.15;
+    } else {
+        combustion.style.opacity = 0;
+    }
+
+    // --- Leak Handling ---
+    const isLeak = state.status === "ALERT" || state.status === "MONITOR";
+    if (isLeak && state.leak_zone) {
+      if (lastLeakZone !== state.leak_zone || lastLeakSub !== state.leak_sub) {
+        lastLeakZone = state.leak_zone;
+        lastLeakSub = state.leak_sub;
+        startLeak(state.leak_zone, state.leak_sub);
+      }
+    } else {
+      lastLeakZone = null;
+      lastLeakSub = null;
+      stopLeak();
+    }
+
+    requestAnimationFrame(renderFrame);
+  }
+
+  // Start loop
+  requestAnimationFrame(renderFrame);
+
+</script>
+</body>
+</html>

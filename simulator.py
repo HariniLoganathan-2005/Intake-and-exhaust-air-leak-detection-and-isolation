@@ -16,7 +16,7 @@ from typing import Optional, Dict
 # ─── Engine Constants ──────────────────────────────────────────────────────────
 DISPLACEMENT_L = 7.2          # Engine displacement in litres (e.g. CAT C7 equivalent)
 NUM_CYLINDERS  = 6
-COMPRESSION_RATIO = 17.5
+COMPRESSION_RATIO = 16.2     # CAT C7 ACERT Turbocharged Aftercooled (TA) — official spec sheet
 R_AIR = 287.05                # J/(kg·K) — specific gas constant for air
 GAMMA = 1.4                   # Ratio of specific heats
 
@@ -31,6 +31,17 @@ TURBO_RPM_BREAKPOINTS  = np.array([600, 900, 1200, 1600, 2000, 2400, 2800, 3000]
 TURBO_PRESSURE_RATIO   = np.array([1.05, 1.10, 1.25, 1.55, 1.85, 2.10, 2.30, 2.35])
 TURBO_COMP_TEMP_RISE_K = np.array([5,   10,   20,   35,   52,   68,   80,   85])
 
+# ─── Turbocharger Speed Map  [engine RPM → turbo RPM] ────────────────────────
+# Approximate relationship for a CAT-class turbocharger.
+# At 2000 engine RPM the turbo spins at ~85 000 RPM.
+N_TURBO_ENGINE_RPM   = np.array([600,   900,  1200,  1600,  2000,  2400,  2800,  3000])
+N_TURBO_SHAFT_RPM    = np.array([28000, 38000, 52000, 68000, 85000, 98000, 110000, 115000])
+
+# ─── Lambda (air-excess ratio) ────────────────────────────────────────────────
+# λ = 1.0 at stoichiometric; diesel engines run λ > 1 (lean overall).
+# Nominal at rated condition is ~1.65 (excess air to prevent smoke).
+LAMBDA_NOMINAL = 1.65   # baseline λ at 2000 RPM / 60 % load
+
 # ─── Intercooler Model ─────────────────────────────────────────────────────────
 INTERCOOLER_EFFICIENCY = 0.72   # fraction of temperature rise removed
 
@@ -44,12 +55,14 @@ EGT_BASE_K = 700.0      # Kelvin baseline at neutral load
 EGT_PER_RPM = 0.05      # K per RPM increase
 
 # ─── Noise levels (1-sigma, in sensor units) ──────────────────────────────────
-NOISE_MAF  = 0.3    # g/s
-NOISE_MAP  = 0.4    # kPa (absolute)
-NOISE_IAT  = 0.2    # °C
-NOISE_EBP  = 0.15   # kPa
-NOISE_EGT  = 1.5    # °C
-NOISE_BOOST_TEMP = 0.4  # °C
+NOISE_MAF        = 0.3    # g/s
+NOISE_MAP        = 0.4    # kPa (absolute)
+NOISE_IAT        = 0.2    # °C
+NOISE_EBP        = 0.15   # kPa
+NOISE_EGT        = 1.5    # °C
+NOISE_BOOST_TEMP = 0.4    # °C
+NOISE_LAMBDA     = 0.005  # λ units (wideband O2 sensor)
+NOISE_N_TURBO    = 500.0  # turbo RPM (eddy-current sensor)
 
 
 @dataclass
@@ -84,10 +97,9 @@ class EngineState:
     egt_3: float = 0.0
     egt_4: float = 0.0
     egt_5: float = 0.0
-    egt_3: float = 0.0
-    egt_4: float = 0.0
-    egt_5: float = 0.0
     fuel_rate_gs: float = 0.0
+    lambda_ratio: float = LAMBDA_NOMINAL   # wideband O2 — air-excess ratio
+    n_turbo_rpm: float = 0.0              # turbocharger shaft speed [RPM]
 
     # ECU flags for edge-case suppression
     timestamp: float = 0.0
@@ -110,6 +122,11 @@ def _turbo_pressure_ratio(rpm: float) -> float:
 
 def _turbo_comp_temp_rise(rpm: float) -> float:
     return float(np.interp(rpm, TURBO_RPM_BREAKPOINTS, TURBO_COMP_TEMP_RISE_K))
+
+
+def _n_turbo_nominal(engine_rpm: float) -> float:
+    """Expected turbocharger shaft speed [RPM] at given engine RPM."""
+    return float(np.interp(engine_rpm, N_TURBO_ENGINE_RPM, N_TURBO_SHAFT_RPM))
 
 
 def _fuel_rate(rpm: float, load_pct: float) -> float:
@@ -186,9 +203,10 @@ class EngineSimulator:
         # 1. Fuel rate
         fuel_gs = _fuel_rate(rpm, load) + rng.normal(0, 0.05)
 
-        # 2. Turbocharger
+        # 2. Turbocharger — baseline shaft speed and boost
         pr = _turbo_pressure_ratio(rpm)
         comp_temp_rise = _turbo_comp_temp_rise(rpm)
+        n_turbo = _n_turbo_nominal(rpm)   # baseline turbo shaft speed [RPM]
 
         # MAP — turbocharger raises inlet pressure
         map_abs_kpa = s.ambient_pressure_kpa * pr
@@ -217,7 +235,7 @@ class EngineSimulator:
         # 7. EGT Sensors (5 sensors progressively dropping in temp)
         egt_base = EGT_BASE_K + EGT_PER_RPM * (rpm - 1000) + (load / 100.0) * 150
         egt_base_c = egt_base - 273.15
-        
+
         egt_1 = egt_base_c + rng.normal(0, NOISE_EGT)
         egt_2 = egt_base_c - 150.0 + rng.normal(0, NOISE_EGT)
         egt_3 = egt_base_c - 220.0 + rng.normal(0, NOISE_EGT)
@@ -227,63 +245,108 @@ class EngineSimulator:
         # 8. Intake Air Temperature
         iat_c = intercooler_outlet_c + rng.normal(0, NOISE_IAT)
 
+        # 9. Lambda (air-excess ratio)
+        # λ = actual_air / stoich_air.  Diesel runs lean overall.
+        # We model λ from the ratio of actual-to-ideal air for the fuel injected.
+        # Stoichiometric AFR for diesel ≈ 14.5 g-air / g-fuel.
+        stoich_afr = 14.5
+        if fuel_gs > 0.01:
+            lambda_ratio = (maf_gs / fuel_gs) / stoich_afr
+        else:
+            lambda_ratio = LAMBDA_NOMINAL
+        # Clamp to physically sensible range
+        lambda_ratio = float(np.clip(lambda_ratio, 0.5, 3.5))
+
         # ── Apply Leak Effects ─────────────────────────────────────────────────
+        #
+        # PRIMARY effects change the zone's own sensor directly.
+        # SECONDARY (cascade) effects are physically smaller cross-zone impacts
+        # that mimic real-world sensor coupling.
 
-        # Zone A — air path before turbo or intake restriction → MAF drops
+        # ── Zone A — air path before turbo or intake restriction ───────────────
+        # PRIMARY:   MAF drops (unmetered air bypasses MAF sensor)
+        # SECONDARY: Lambda rises (engine gets extra unmeasured air → lean mix)
+        #            N_turbo rises (turbo works harder against restricted suction path)
         if self.leak.zone_a_severity > 0:
-            maf_gs *= (1.0 - self.leak.zone_a_severity)
+            sv_a = self.leak.zone_a_severity
+            maf_gs       *= (1.0 - sv_a)
+            # Lambda: lean shift — extra unmetered air not matched by ECU fuel cut
+            lambda_ratio += 0.18 * sv_a
+            # N_turbo: turbo spins faster to pull air through restricted inlet
+            n_turbo      *= (1.0 + 0.15 * sv_a)
 
-        # Zone B — charge air cooler or hose failure → MAP drops
+        # ── Zone B — charge-air path (turbo outlet → intercooler → manifold) ───
+        # PRIMARY:   MAP drops (compressed air escapes before engine)
+        # SECONDARY: Lambda drops toward rich (ECU doesn't cut fuel fast enough
+        #              to match the reduced air reaching the engine)
+        #            EBP drops slightly (less fuel burned → less exhaust mass)
+        #            EGT drops slightly (less combustion energy)
         if self.leak.zone_b_severity > 0:
-            map_abs_kpa *= (1.0 - self.leak.zone_b_severity)
+            sv_b = self.leak.zone_b_severity
+            map_abs_kpa *= (1.0 - sv_b)
             if self.leak.zone_b_location == "before_intercooler":
-                # Leak is between turbo compressor outlet and intercooler inlet.
-                # Boost temperature at the turbo outlet is UNCHANGED (leak is downstream of turbo).
-                # However, the intercooler sees reduced flow, so it removes relatively
-                # more heat per unit mass → intercooler outlet temp drops noticeably.
-                # The boost_temp sensor (turbo outlet side) reads normally,
-                # but the intercooler outlet temperature is lower → delta SHRINKS.
-                temp_drop_factor = self.leak.zone_b_severity * 0.6
+                # Intercooler sees reduced flow → cools more aggressively per unit mass
+                temp_drop_factor = sv_b * 0.6
                 intercooler_outlet_c -= comp_temp_rise * temp_drop_factor
             else:  # after_intercooler
-                # Leak is between intercooler outlet and intake manifold.
-                # Intercooler operates normally → boost_temp and ic_outlet behave normally.
-                # Only a very slight pressure-driven temperature change at outlet.
-                intercooler_outlet_c -= 2.0 * self.leak.zone_b_severity  # slight temp delta
+                # Slight pressure-driven temperature delta only
+                intercooler_outlet_c -= 2.0 * sv_b
+            # Secondary: rich shift — engine gets less air but ECU still injects near-nominal fuel
+            lambda_ratio -= 0.12 * sv_b
+            # Secondary: EBP drops because less fuel is eventually burned.
+            # At high severity (>75%) this is large enough to cross Zone C detection threshold
+            # — that is when cascade suppression in physics_engine becomes active.
+            ebp_kpa      *= (1.0 - 0.20 * sv_b)
+            # Secondary: EGT drops slightly from reduced combustion
+            egt_drop_b = 15.0 * sv_b
+            egt_1 -= egt_drop_b
+            egt_2 -= egt_drop_b
+            egt_3 -= egt_drop_b
+            egt_4 -= egt_drop_b
+            egt_5 -= egt_drop_b
 
-        # Zone C — exhaust valve, manifold, or downstream leak → EBP drops
+        # ── Zone C — exhaust path (manifold → turbine → DOC → DPF → SCR) ───────
+        # PRIMARY:   EBP drops (exhaust escapes before sensor)
+        #            EGT drops after the crack point
+        # SECONDARY: Lambda rises (room air drawn in through crack → O2 at tailpipe)
+        #            MAP drops (turbo loses exhaust drive energy → less boost)
+        #            N_turbo drops (turbo shaft slows from reduced exhaust energy)
         if self.leak.zone_c_severity > 0:
-            ebp_kpa *= (1.0 - 0.6 * self.leak.zone_c_severity)
-            
-            leak_drop = 60.0 * self.leak.zone_c_severity
+            sv_c = self.leak.zone_c_severity
+            # Primary EBP reduction
+            ebp_kpa *= (1.0 - 0.60 * sv_c)
+            # Primary EGT reduction — only sensors AFTER the crack point are affected
+            leak_drop = 60.0 * sv_c
             loc = self.leak.zone_c_location
-            
             if loc == "exhaust_manifold":
-                egt_1 -= leak_drop
-                egt_2 -= leak_drop
-                egt_3 -= leak_drop
-                egt_4 -= leak_drop
-                egt_5 -= leak_drop
+                egt_1 -= leak_drop; egt_2 -= leak_drop
+                egt_3 -= leak_drop; egt_4 -= leak_drop; egt_5 -= leak_drop
             elif loc == "manifold_to_turbine":
-                egt_2 -= leak_drop
-                egt_3 -= leak_drop
-                egt_4 -= leak_drop
-                egt_5 -= leak_drop
+                egt_2 -= leak_drop; egt_3 -= leak_drop
+                egt_4 -= leak_drop; egt_5 -= leak_drop
             elif loc == "turbine_to_doc":
-                egt_3 -= leak_drop
-                egt_4 -= leak_drop
-                egt_5 -= leak_drop
+                egt_3 -= leak_drop; egt_4 -= leak_drop; egt_5 -= leak_drop
             elif loc == "doc_to_dpf":
-                egt_4 -= leak_drop
-                egt_5 -= leak_drop
+                egt_4 -= leak_drop; egt_5 -= leak_drop
             elif loc == "dpf_to_scr":
                 egt_5 -= leak_drop
+            # Secondary: room air drawn through crack raises O2 at tailpipe → lambda rises
+            lambda_ratio += 0.09 * sv_c
+            
+            # Secondary: if leak is BEFORE the turbine, turbo loses exhaust drive energy
+            if loc in ["exhaust_manifold", "manifold_to_turbine"]:
+                # MAP drops slightly. At high severity (>75%) this crosses Zone B detection threshold
+                map_abs_kpa  *= (1.0 - 0.12 * sv_c)
+                # Turbo shaft slows from reduced exhaust energy
+                n_turbo      *= (1.0 - 0.10 * sv_c)
 
         # ── Add Sensor Noise ──────────────────────────────────────────────────
         maf_gs        += rng.normal(0, NOISE_MAF)
         map_abs_kpa   += rng.normal(0, NOISE_MAP)
         boost_temp_c  += rng.normal(0, NOISE_BOOST_TEMP)
         ebp_kpa       += rng.normal(0, NOISE_EBP)
+        lambda_ratio  += rng.normal(0, NOISE_LAMBDA)
+        n_turbo       += rng.normal(0, NOISE_N_TURBO)
 
         # ── Build updated state ───────────────────────────────────────────────
         s.maf_actual               = round(max(0.0, maf_gs), 3)
@@ -297,10 +360,9 @@ class EngineSimulator:
         s.egt_3                    = round(egt_3, 2)
         s.egt_4                    = round(egt_4, 2)
         s.egt_5                    = round(egt_5, 2)
-        s.egt_3                    = round(egt_3, 2)
-        s.egt_4                    = round(egt_4, 2)
-        s.egt_5                    = round(egt_5, 2)
         s.fuel_rate_gs             = round(max(0.0, fuel_gs), 3)
+        s.lambda_ratio             = round(float(np.clip(lambda_ratio, 0.5, 3.5)), 4)
+        s.n_turbo_rpm              = round(max(0.0, n_turbo), 0)
         s.timestamp                = round(self._t, 3)
 
         return s
@@ -326,10 +388,9 @@ class EngineSimulator:
             "egt_3_c":                 state.egt_3,
             "egt_4_c":                 state.egt_4,
             "egt_5_c":                 state.egt_5,
-            "egt_3_c":                 state.egt_3,
-            "egt_4_c":                 state.egt_4,
-            "egt_5_c":                 state.egt_5,
             "fuel_rate_gs":            state.fuel_rate_gs,
+            "lambda_ratio":            state.lambda_ratio,
+            "n_turbo_rpm":             state.n_turbo_rpm,
             "coolant_temp_c":          state.coolant_temp_c,
             "dpf_regen":               int(state.dpf_regen_active),
             "egr_pct":                 state.egr_position_pct,

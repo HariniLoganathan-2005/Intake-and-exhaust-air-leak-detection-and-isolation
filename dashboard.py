@@ -35,10 +35,13 @@ from collections import deque
 sys.path.insert(0, str(Path(__file__).parent))
 from simulator      import EngineSimulator
 from pipeline       import DataPipeline
-from physics_engine import PhysicsEngine
+from physics_engine import PhysicsEngine, ZoneResult
 from ml_engine      import MLEngine, MLResult
 from fusion         import fuse, FusionDecision
 from output         import OutputManager
+import streamlit.components.v1 as components
+import socketserver
+import http.server
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -209,7 +212,7 @@ st.markdown("""
 # ─── Session State Boot ────────────────────────────────────────────────────────
 
 def _init_session():
-    if "initialized" in st.session_state:
+    if "initialized" in st.session_state and "port" in st.session_state:
         return
 
     sim = EngineSimulator(initial_rpm=2000, initial_load=60)
@@ -238,6 +241,7 @@ def _init_session():
 
     shared = {"decision": FusionDecision(), "raw": {}, "filt": {},
               "res_a": 0.0, "res_b": 0.0, "res_c": 0.0,
+              "last_ra": ZoneResult("A"), "last_rb": ZoneResult("B"), "last_rc": ZoneResult("C"),
               "running": True}
     lock = threading.Lock()
 
@@ -260,6 +264,9 @@ def _init_session():
                     decision   = fuse(ra, rb, rc, ml_res, raw["timestamp"])
                     out.emit(decision)
                     last_ra, last_rb, last_rc = ra, rb, rc
+                    shared["last_ra"] = ra
+                    shared["last_rb"] = rb
+                    shared["last_rc"] = rc
                 else:
                     decision = FusionDecision(status="WARMING_UP",
                                               timestamp=raw["timestamp"])
@@ -286,7 +293,43 @@ def _init_session():
     t = threading.Thread(target=engine_loop, daemon=True, name="DashEngine")
     t.start()
 
+    # Find a free port and start state server
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    class StateHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass # suppress logging
+        def do_GET(self):
+            if self.path == '/state.json':
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                with lock:
+                    d = shared["decision"]
+                    data = {
+                        "rpm": shared["filt"].get("rpm", 2000),
+                        "load": shared["filt"].get("load_pct", 60),
+                        "maf": shared["filt"].get("maf_gs", 150),
+                        "n_turbo": shared["filt"].get("n_turbo_rpm", 80000),
+                        "leak_zone": d.zone if d.leak_detected else None,
+                        "leak_sub": d.sub_location if d.leak_detected else None,
+                        "status": d.status
+                    }
+                self.wfile.write(json.dumps(data).encode())
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = socketserver.TCPServer(("", port), StateHandler)
+    threading.Thread(target=server.serve_forever, daemon=True, name="DashStateServer").start()
+
     st.session_state.initialized = True
+    st.session_state.port   = port
     st.session_state.sim    = sim
     st.session_state.shared = shared
     st.session_state.lock   = lock
@@ -305,18 +348,53 @@ hist   = st.session_state.hist
 
 def snap():
     with lock:
-        d    = shared["decision"]
-        raw  = dict(shared["raw"])
-        filt = dict(shared["filt"])
-        ra   = shared["res_a"]
-        rb   = shared["res_b"]
-        rc   = shared["res_c"]
-        h    = {k: list(v) for k, v in hist.items()}
-    return d, raw, filt, ra, rb, rc, h
+        d       = shared["decision"]
+        raw     = dict(shared["raw"])
+        filt    = dict(shared["filt"])
+        ra      = shared["res_a"]
+        rb      = shared["res_b"]
+        rc      = shared["res_c"]
+        snap_ra = shared["last_ra"]
+        snap_rb = shared["last_rb"]
+        snap_rc = shared["last_rc"]
+        h       = {k: list(v) for k, v in hist.items()}
+    return d, raw, filt, ra, rb, rc, snap_ra, snap_rb, snap_rc, h
+
+
+# ─── Zone Detail HTML Helper ──────────────────────────────────────────────────
+THRESH = {"A": 8.0, "B": 6.0, "C": 12.0}
+
+
+def _zone_detail_html(label: str, result, threshold: float) -> str:
+    """Return the HTML for one zone detail card (does NOT call st.markdown)."""
+    pct    = min(100, abs(result.residual_pct) / max(threshold, 0.01) * 100)
+    colour = "#4ade80" if pct < 50 else "#fb923c" if pct < 85 else "#f87171"
+    flag_t = "🚩 FLAGGED" if result.flag else ("🔇 SUPPRESSED" if result.suppressed else "✅ OK")
+    flag_c = "#f87171" if result.flag else "#94a3b8"
+    drift_t = " | 📈 DRIFT" if result.drift else ""
+    sign   = "+" if result.residual_pct > 0 else ""
+    return f"""
+    <div class="sensor-card" style="margin-bottom:0.4rem;padding:0.6rem 1rem">
+      <div style="display:flex;justify-content:space-between">
+        <div style="font-size:0.72rem;color:#94a3b8;font-weight:600">{label}</div>
+        <div style="font-size:0.72rem;color:{flag_c};font-weight:700">{flag_t}{drift_t}</div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+        <div style="font-size:0.68rem;color:#475569">
+          Exp: {result.expected:.1f} &nbsp; Act: {result.actual:.1f}
+        </div>
+        <div style="font-family:'JetBrains Mono';font-size:0.95rem;font-weight:700;color:{colour}">
+          {sign}{result.residual_pct:.1f}%
+        </div>
+      </div>
+      <div style="background:#1e293b;border-radius:999px;height:7px;margin-top:5px">
+        <div style="background:{colour};width:{pct:.1f}%;height:7px;border-radius:999px;transition:width 0.4s ease"></div>
+      </div>
+    </div>"""
 
 # ─── Header ───────────────────────────────────────────────────────────────────
 
-d, raw, filt, res_a, res_b, res_c, h = snap()
+d, raw, filt, res_a, res_b, res_c, snap_ra, snap_rb, snap_rc, h = snap()
 
 status = d.status or "WARMING_UP"
 badge_class = {
@@ -344,140 +422,11 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ─── Main 3-column layout ─────────────────────────────────────────────────────
-col_sensors, col_gauges, col_alert = st.columns([2, 2.2, 2], gap="medium")
+# ─── Top Row: Detection & Residuals ──────────────────────────────────────────
+col_alert, col_gauges = st.columns([1, 1], gap="large")
 
-# ── LEFT: Sensor readings ──────────────────────────────────────────────────────
-with col_sensors:
-    st.markdown('<div class="control-title">📡 Live Sensor Readings</div>',
-                unsafe_allow_html=True)
-
-    def sensor_card(label, value, unit, warn=False):
-        cls = "sensor-card warn" if warn else "sensor-card"
-        st.markdown(f"""
-        <div class="{cls}">
-          <div class="sensor-label">{label}</div>
-          <span class="sensor-value">{value}</span>
-          <span class="sensor-unit"> {unit}</span>
-        </div>""", unsafe_allow_html=True)
-
-    rpm_v   = filt.get("rpm",   raw.get("rpm",   0))
-    load_v  = raw.get("load_pct", 0)
-    maf_v   = filt.get("maf_gs", 0)
-    map_v   = filt.get("map_kpa", 0)
-    iat_v   = filt.get("iat_c", 0)
-    boost_v = filt.get("boost_temp_c", 0)
-    ic_v    = filt.get("intercooler_outlet_c", 0)
-    ebp_v   = filt.get("ebp_kpa", 0)
-    egt1_v  = filt.get("egt_1_c", 0)
-    egt2_v  = filt.get("egt_2_c", 0)
-    egt3_v  = filt.get("egt_3_c", 0)
-    egt4_v  = filt.get("egt_4_c", 0)
-    egt5_v  = filt.get("egt_5_c", 0)
-    fuel_v  = filt.get("fuel_rate_gs", 0)
-
-    sensor_card("Engine Speed (RPM)",      f"{rpm_v:,.0f}",  "RPM")
-    sensor_card("Engine Load",             f"{load_v:.1f}",  "%")
-    sensor_card("Mass Air Flow (MAF)",     f"{maf_v:.2f}",   "g/s",
-                warn=(d.zone == "A" and d.leak_detected))
-    sensor_card("Manifold Abs. Pressure",  f"{map_v:.2f}",   "kPa",
-                warn=(d.zone == "B" and d.leak_detected))
-    sensor_card("Intake Air Temp",         f"{iat_v:.1f}",   "°C")
-    sensor_card("Boost Temp (post-Turbo)", f"{boost_v:.1f}", "°C")
-    sensor_card("Intercooler Outlet Temp", f"{ic_v:.1f}",    "°C")
-    sensor_card("Exhaust Back Pressure",   f"{ebp_v:.2f}",   "kPa",
-                warn=(d.zone == "C" and d.leak_detected))
-    sensor_card("EGT Manifold",           f"{egt1_v:.1f}",  "°C")
-    sensor_card("EGT Turbine Outlet",     f"{egt2_v:.1f}",  "°C")
-    sensor_card("EGT DOC Outlet",         f"{egt3_v:.1f}",  "°C")
-    sensor_card("EGT DPF Outlet",         f"{egt4_v:.1f}",  "°C")
-    sensor_card("EGT SCR Outlet",         f"{egt5_v:.1f}",  "°C")
-    sensor_card("Fuel Rate",              f"{fuel_v:.2f}",  "g/s")
-
-# ── CENTRE: Residual Gauges ────────────────────────────────────────────────────
-with col_gauges:
-    st.markdown('<div class="control-title">📊 Zone Residuals vs Threshold</div>',
-                unsafe_allow_html=True)
-
-    THRESH = {"A": 8.0, "B": 6.0, "C": 12.0}
-
-    def residual_gauge(zone_name, residual, threshold, sensor_label):
-        pct    = min(100, abs(residual) / threshold * 100)
-        colour = ("#4ade80" if pct < 50 else
-                  "#fb923c" if pct < 85 else "#f87171")
-        cls    = ("gauge-ok" if pct < 50 else
-                  "gauge-warn" if pct < 85 else "gauge-crit")
-        sign   = "+" if residual > 0 else ""
-        st.markdown(f"""
-        <div class="sensor-card" style="margin-bottom:0.8rem">
-          <div class="gauge-label">Zone {zone_name} — {sensor_label}</div>
-          <div class="{cls}" style="font-family:'JetBrains Mono',monospace;font-size:1.3rem;font-weight:700">
-            {sign}{residual:.1f}%
-          </div>
-          <div style="background:#1e293b;border-radius:999px;height:8px;margin:6px 0">
-            <div style="background:{colour};width:{pct:.1f}%;height:8px;
-                        border-radius:999px;transition:width 0.4s ease"></div>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:0.65rem;color:#475569">
-            <span>0%</span><span>Threshold {threshold}%</span><span>100%</span>
-          </div>
-        </div>""", unsafe_allow_html=True)
-
-    residual_gauge("A", res_a, THRESH["A"], "MAF residual (drop)")
-    residual_gauge("B", res_b, THRESH["B"], "MAP residual (drop)")
-    residual_gauge("C", res_c, THRESH["C"], "EBP residual (rise)")
-
-    st.markdown('<div style="height:0.5rem"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="control-title">🤖 ML Engine</div>',
-                unsafe_allow_html=True)
-
-    ml_err = d.ml_recon_error or 0.0
-    ml_f   = "✅ Normal" if not d.ml_flag else f"⚠ Anomaly — {d.ml_worst_feature}"
-    ml_z   = f"Zone {d.anomaly_zone if hasattr(d,'anomaly_zone') else '?'}" if d.ml_flag else "—"
-    st.markdown(f"""
-    <div class="sensor-card">
-      <div class="gauge-label">Reconstruction Error</div>
-      <div style="font-family:'JetBrains Mono',monospace;font-size:1.2rem;
-                  color:{'#f87171' if d.ml_flag else '#4ade80'};font-weight:700">
-        {ml_err:.5f}
-      </div>
-      <div style="font-size:0.78rem;color:#94a3b8;margin-top:4px">{ml_f}</div>
-    </div>""", unsafe_allow_html=True)
-
-    # Fusion scores
-    st.markdown(f"""
-    <div class="sensor-card" style="margin-top:0.5rem">
-      <div class="gauge-label">Fusion Scores (Physics 60% | ML 40%)</div>
-      <div style="display:flex;gap:1rem;margin-top:6px">
-        <div>
-          <div style="font-size:0.65rem;color:#64748b">PHYSICS</div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;
-                      font-weight:700;color:#facc15">{d.physics_score:.1f}</div>
-        </div>
-        <div>
-          <div style="font-size:0.65rem;color:#64748b">ML</div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;
-                      font-weight:700;color:#facc15">{d.ml_score:.1f}</div>
-        </div>
-        <div>
-          <div style="font-size:0.65rem;color:#64748b">FUSED</div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:1.2rem;
-                      font-weight:700;color:#e2e8f0">{d.fused_score:.1f}</div>
-        </div>
-        <div>
-          <div style="font-size:0.65rem;color:#64748b">CONFIDENCE</div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:1.2rem;
-                      font-weight:700;color:{'#f87171' if d.confidence_pct>70 else '#4ade80'}">
-            {d.confidence_pct:.1f}%</div>
-        </div>
-      </div>
-    </div>""", unsafe_allow_html=True)
-
-# ── RIGHT: Alert panel ─────────────────────────────────────────────────────────
 with col_alert:
-    st.markdown('<div class="control-title">🚨 Detection Output</div>',
-                unsafe_allow_html=True)
-
+    st.markdown('<div class="control-title">🚨 Detection Output</div>', unsafe_allow_html=True)
     if d.leak_detected:
         colour_cls = "red" if status == "ALERT" else "orange"
         zone_emoji = {"A": "💨", "B": "💨", "C": "🔥"}.get(d.zone, "⚠")
@@ -492,76 +441,18 @@ with col_alert:
           <div class="alert-action">🔧 {d.action}</div>
         </div>""", unsafe_allow_html=True)
 
-        if d.zone == "C":
-            # Map sub-location to the faulty flow node and arrow index
-            fault_map = {
-                "exhaust_manifold": {"nodes": ["Manifold"], "arrows": []},
-                "between_manifold_and_turbine": {"nodes": ["Turbine"], "arrows": [0]},
-                "between_turbine_and_doc": {"nodes": ["DOC"], "arrows": [1]},
-                "between_doc_and_dpf": {"nodes": ["DPF"], "arrows": [2]},
-                "between_dpf_and_scr": {"nodes": ["SCR"], "arrows": [3]}
-            }
-            active_info = fault_map.get(d.sub_location, {"nodes": [], "arrows": []})
-            
-            nodes = ["Manifold", "Turbine", "DOC", "DPF", "SCR"]
-            flow_html = '<div class="control-title" style="margin-top: 10px;">EXHAUST FLOW MAP</div>'
-            flow_html += '<div class="flow-map-container">'
-            for i, node in enumerate(nodes):
-                is_active_node = "active" if node in active_info["nodes"] else ""
-                flow_html += f'<div class="flow-node {is_active_node}">{node}</div>'
-                if i < len(nodes) - 1:
-                    is_active_arrow = "active" if i in active_info["arrows"] else ""
-                    flow_html += f'<div class="flow-arrow {is_active_arrow}">&#8594;</div>'
-            flow_html += '</div>'
-            st.markdown(flow_html, unsafe_allow_html=True)
-
-        elif d.zone == "B":
-            # Map sub-location to the faulty flow node and arrow index
-            fault_map = {
-                "before_intercooler_hose_or_turbo_outlet": {"nodes": ["Intercooler"], "arrows": [0]},
-                "after_intercooler_hose_or_clamp": {"nodes": ["Manifold"], "arrows": [1]},
-            }
-            active_info = fault_map.get(d.sub_location, {"nodes": [], "arrows": []})
-            
-            nodes = ["Compressor", "Intercooler", "Manifold"]
-            flow_html = '<div class="control-title" style="margin-top: 10px;">CHARGE AIR FLOW MAP</div>'
-            flow_html += '<div class="flow-map-container">'
-            for i, node in enumerate(nodes):
-                is_active_node = "active" if node in active_info["nodes"] else ""
-                flow_html += f'<div class="flow-node {is_active_node}">{node}</div>'
-                if i < len(nodes) - 1:
-                    is_active_arrow = "active" if i in active_info["arrows"] else ""
-                    flow_html += f'<div class="flow-arrow {is_active_arrow}">&#8594;</div>'
-            flow_html += '</div>'
-            st.markdown(flow_html, unsafe_allow_html=True)
-
-        # Confidence bar
         conf = d.confidence_pct
         cbar_col = "#dc2626" if conf > 80 else "#ea580c" if conf > 50 else "#facc15"
         st.markdown(f"""
         <div class="sensor-card">
-          <div class="gauge-label">Confidence</div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:1.8rem;
-                      font-weight:900;color:{cbar_col}">{conf:.1f}%</div>
-          <div style="background:#1e293b;border-radius:999px;height:10px;margin-top:6px">
-            <div style="background:{cbar_col};width:{conf:.1f}%;height:10px;
-                        border-radius:999px"></div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+             <div class="gauge-label">Confidence</div>
+             <div style="font-family:'JetBrains Mono',monospace;font-size:1.4rem;font-weight:900;color:{cbar_col}">{conf:.1f}%</div>
+          </div>
+          <div style="background:#1e293b;border-radius:999px;height:8px;margin-top:6px">
+            <div style="background:{cbar_col};width:{conf:.1f}%;height:8px;border-radius:999px"></div>
           </div>
         </div>""", unsafe_allow_html=True)
-
-        # Evidence
-        st.markdown(f"""
-        <div class="sensor-card">
-          <div class="gauge-label">Evidence</div>
-          <div style="font-size:0.8rem;line-height:1.8">
-            <b>Sensor:</b> {d.sensor_name}<br>
-            <b>Expected:</b> {d.expected_value:.3f}<br>
-            <b>Actual:</b>   {d.actual_value:.3f}<br>
-            <b>Residual:</b> <span style="color:#f87171">{d.residual_pct:+.1f}%</span>
-            {"<br><b style='color:#fb923c'>⚠ DRIFT detected</b>" if d.drift else ""}
-          </div>
-        </div>""", unsafe_allow_html=True)
-
     else:
         icon = "⏳" if status == "WARMING_UP" else "✅"
         msg  = "Warming up..." if status == "WARMING_UP" else "System Nominal"
@@ -572,20 +463,141 @@ with col_alert:
             No leaks detected in any zone.</div>
         </div>""", unsafe_allow_html=True)
 
-    # DPF / EGR status
+# ── Zone Detail cards (directly below alert box in col_alert) ────────────────
+with col_alert:
+    col_alert.markdown(
+        '<div class="control-title" style="margin-top:0.6rem">🔍 Zone Detail</div>',
+        unsafe_allow_html=True,
+    )
+    col_alert.markdown(
+        _zone_detail_html("Zone A — MAF (Pre-Turbo)",  snap_ra, THRESH["A"]) +
+        _zone_detail_html("Zone B — MAP (Charge-Air)",  snap_rb, THRESH["B"]) +
+        _zone_detail_html("Zone C — EBP (Exhaust)",     snap_rc, THRESH["C"]),
+        unsafe_allow_html=True,
+    )
+
+with col_gauges:
+    st.markdown('<div class="control-title">📊 Zone Residuals vs Threshold</div>', unsafe_allow_html=True)
+
+    def residual_gauge(zone_name, residual, threshold, sensor_label):
+        pct    = min(100, abs(residual) / threshold * 100)
+        colour = ("#4ade80" if pct < 50 else "#fb923c" if pct < 85 else "#f87171")
+        cls    = ("gauge-ok" if pct < 50 else "gauge-warn" if pct < 85 else "gauge-crit")
+        sign   = "+" if residual > 0 else ""
+        st.markdown(f"""
+        <div class="sensor-card" style="margin-bottom:0.4rem; padding: 0.6rem 1rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div class="gauge-label" style="margin-bottom:0">Zone {zone_name} — {sensor_label}</div>
+              <div class="{cls}" style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;font-weight:700">
+                {sign}{residual:.1f}%
+              </div>
+          </div>
+          <div style="background:#1e293b;border-radius:999px;height:6px;margin:4px 0">
+            <div style="background:{colour};width:{pct:.1f}%;height:6px;border-radius:999px;transition:width 0.4s ease"></div>
+          </div>
+        </div>""", unsafe_allow_html=True)
+
+    residual_gauge("A", res_a, THRESH["A"], "MAF")
+    residual_gauge("B", res_b, THRESH["B"], "MAP")
+    residual_gauge("C", res_c, THRESH["C"], "EBP")
+
+# ─── Second Row: ECU Status & ML Engine ───────────────────────────────────────
+st.markdown("<br>", unsafe_allow_html=True)
+col_ecu, col_ml = st.columns([1, 1], gap="large")
+
+with col_ecu:
+    st.markdown('<div class="control-title">⚙️ ECU Status</div>', unsafe_allow_html=True)
     dpf_on = bool(raw.get("dpf_regen", 0))
     egr_p  = raw.get("egr_pct", 15)
     cool   = raw.get("coolant_temp_c", 88)
     st.markdown(f"""
-    <div class="sensor-card" style="margin-top:0.5rem">
-      <div class="gauge-label">ECU Status Flags</div>
-      <div style="font-size:0.8rem;line-height:1.9">
-        DPF Regen: <b style="color:{'#fb923c' if dpf_on else '#4ade80'}">
-          {'ACTIVE' if dpf_on else 'OFF'}</b><br>
-        EGR Position: <b style="color:#e2e8f0">{egr_p:.1f}%</b><br>
-        Coolant Temp: <b style="color:#e2e8f0">{cool:.1f} °C</b>
+    <div class="sensor-card">
+      <div style="font-size:0.95rem;line-height:2.2">
+        DPF Regen: <b style="float:right; color:{'#fb923c' if dpf_on else '#4ade80'}">{'ACTIVE' if dpf_on else 'OFF'}</b><br>
+        EGR Position: <b style="float:right; color:#e2e8f0">{egr_p:.1f}%</b><br>
+        Coolant Temp: <b style="float:right; color:#e2e8f0">{cool:.1f} °C</b>
       </div>
     </div>""", unsafe_allow_html=True)
+
+with col_ml:
+    st.markdown('<div class="control-title">🤖 ML Engine</div>', unsafe_allow_html=True)
+    ml_err = d.ml_recon_error or 0.0
+    ml_f   = "✅ Normal" if not d.ml_flag else f"⚠ Anomaly"
+    st.markdown(f"""
+    <div class="sensor-card">
+      <div class="gauge-label">Reconstruction Error</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:1.4rem;color:{'#f87171' if d.ml_flag else '#4ade80'};font-weight:700">
+        {ml_err:.5f}
+      </div>
+      <div style="font-size:0.85rem;color:#94a3b8;margin-top:4px">{ml_f}</div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div class="sensor-card" style="margin-top:0.5rem">
+      <div class="gauge-label">Fusion Scores</div>
+      <div style="display:flex; justify-content:space-between; margin-top:6px">
+        <div><div style="font-size:0.7rem;color:#64748b">PHYSICS</div><div style="font-family:'JetBrains Mono';font-size:1.1rem;color:#facc15">{d.physics_score:.1f}</div></div>
+        <div><div style="font-size:0.7rem;color:#64748b">ML</div><div style="font-family:'JetBrains Mono';font-size:1.1rem;color:#facc15">{d.ml_score:.1f}</div></div>
+        <div><div style="font-size:0.7rem;color:#64748b">FUSED</div><div style="font-family:'JetBrains Mono';font-size:1.3rem;color:#e2e8f0">{d.fused_score:.1f}</div></div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+# ─── Middle Row: Massive Flow Map ──────────────────────────────────────────────
+st.markdown("---")
+st.markdown('<div class="control-title" style="font-size: 1.2rem; text-align: center; margin-bottom: 0;">🌬️ ENGINE FLOW MAP</div>', unsafe_allow_html=True)
+html_str = open("flow_animation.html").read().replace("8502", str(st.session_state.port))
+# Let the iframe handle responsiveness with vh units, but set a high base height
+components.html(html_str, height=600)
+st.markdown("---")
+
+# ─── Bottom Row: 14 Live Sensors ──────────────────────────────────────────────
+st.markdown('<div class="control-title">📡 Live Sensor Readings</div>', unsafe_allow_html=True)
+sc1, sc2, sc3 = st.columns(3, gap="medium")
+
+def sensor_card(label, value, unit, warn=False):
+    cls = "sensor-card warn" if warn else "sensor-card"
+    st.markdown(f"""
+    <div class="{cls}" style="padding: 0.4rem 1rem; margin-bottom: 0.4rem;">
+      <div style="display:flex; justify-content:space-between;">
+         <div class="sensor-label" style="margin-bottom:0">{label}</div>
+         <div><span class="sensor-value" style="font-size:0.9rem">{value}</span><span class="sensor-unit"> {unit}</span></div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+rpm_v   = filt.get("rpm",   raw.get("rpm",   0))
+load_v  = raw.get("load_pct", 0)
+maf_v   = filt.get("maf_gs", 0)
+map_v   = filt.get("map_kpa", 0)
+iat_v   = filt.get("iat_c", 0)
+boost_v = filt.get("boost_temp_c", 0)
+ic_v    = filt.get("intercooler_outlet_c", 0)
+ebp_v   = filt.get("ebp_kpa", 0)
+egt1_v  = filt.get("egt_1_c", 0)
+egt2_v  = filt.get("egt_2_c", 0)
+egt3_v  = filt.get("egt_3_c", 0)
+egt4_v  = filt.get("egt_4_c", 0)
+egt5_v  = filt.get("egt_5_c", 0)
+fuel_v  = filt.get("fuel_rate_gs", 0)
+
+with sc1:
+    sensor_card("Engine Speed",      f"{rpm_v:,.0f}",  "RPM")
+    sensor_card("Engine Load",       f"{load_v:.1f}",  "%")
+    sensor_card("Mass Air Flow",     f"{maf_v:.1f}",   "g/s", warn=(d.zone == "A" and d.leak_detected))
+    sensor_card("Intake Air Temp",   f"{iat_v:.1f}",   "°C")
+    sensor_card("Fuel Rate",         f"{fuel_v:.2f}",  "g/s")
+
+with sc2:
+    sensor_card("Intake Pressure",   f"{map_v:.1f}",   "kPa", warn=(d.zone == "B" and d.leak_detected))
+    sensor_card("Boost Temp",        f"{boost_v:.1f}", "°C")
+    sensor_card("Intercooler Temp",  f"{ic_v:.1f}",    "°C")
+    sensor_card("Exhaust Pressure",  f"{ebp_v:.1f}",   "kPa", warn=(d.zone == "C" and d.leak_detected))
+    sensor_card("EGT Manifold",      f"{egt1_v:.1f}",  "°C")
+
+with sc3:
+    sensor_card("EGT Turbine",       f"{egt2_v:.1f}",  "°C")
+    sensor_card("EGT DOC",           f"{egt3_v:.1f}",  "°C")
+    sensor_card("EGT DPF",           f"{egt4_v:.1f}",  "°C")
+    sensor_card("EGT SCR",           f"{egt5_v:.1f}",  "°C")
 
 # ─── History Chart ─────────────────────────────────────────────────────────────
 st.markdown("---")

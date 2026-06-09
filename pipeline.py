@@ -27,6 +27,9 @@ SENSOR_RANGES = {
     "egt_5_c":              (0.0,  1000.0),
     "fuel_rate_gs":         (0.1,    15.0),
     "rpm":                  (500.0,  3200.0),
+    # New test-cell instruments (added with cascade physics)
+    "lambda_ratio":         (0.5,    3.5),    # wideband O2 — air-excess ratio
+    "n_turbo_rpm":          (5000.0, 150000.0),  # turbocharger shaft speed
 }
 
 # ─── Rolling-median window (10 readings = 1 s at 100 ms/step) ─────────────────
@@ -194,8 +197,10 @@ if __name__ == "__main__":
             print(f"\nTimestamp: {pr.timestamp:.1f}s")
             print(f"Steady state: {pr.steady_state}")
             print(f"All sensors valid: {pr.all_valid}")
-            print(f"Filtered MAF: {pr.filt['maf_gs']:.2f} g/s")
-            print(f"Filtered MAP: {pr.filt['map_kpa']:.2f} kPa")
+            print(f"Filtered MAF:     {pr.filt['maf_gs']:.2f} g/s")
+            print(f"Filtered MAP:     {pr.filt['map_kpa']:.2f} kPa")
+            print(f"Filtered Lambda:  {pr.filt['lambda_ratio']:.4f}")
+            print(f"Filtered N_turbo: {pr.filt['n_turbo_rpm']:.0f} RPM")
 
     print("\nSummary stats:")
     print(pipe.summary_stats().to_string(index=False))
