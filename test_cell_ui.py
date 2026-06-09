@@ -299,7 +299,7 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
-html_str = open(Path(__file__).parent / "flow_animation.html").read().replace("8502", str(port))
+html_str = open(Path(__file__).parent / "flow_animation.html", encoding="utf-8").read().replace("8502", str(port))
 components.html(html_str, height=600)
 st.markdown("---")
 

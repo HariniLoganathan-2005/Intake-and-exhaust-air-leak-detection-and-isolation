@@ -826,21 +826,22 @@ with col_alert:
           <div class="alert-sub">{desc}</div>
         </div>
         """, unsafe_allow_html=True)
+# END of `with col_alert:` block
 
-    # ── Zone result detail cards ─────────────────────────────────────────────
-    # col_alert.markdown() is used DIRECTLY (not st.markdown inside a with block)
-    # to guarantee the HTML lands in col_alert — immune to column-context drift
-    # during rapid st.rerun() cycles that caused duplicated Zone B / Zone C cards.
-    col_alert.markdown(
-        '<div class="sec-title" style="margin-top:0.8rem">🔍 Zone Detail</div>',
-        unsafe_allow_html=True,
-    )
-    col_alert.markdown(
-        _zone_detail_html("Zone A — MAF (Pre-Turbo)",  snap_ra, THRESH["A"]) +
-        _zone_detail_html("Zone B — MAP (Charge-Air)",  snap_rb, THRESH["B"]) +
-        _zone_detail_html("Zone C — EBP (Exhaust)",     snap_rc, THRESH["C"]),
-        unsafe_allow_html=True,
-    )
+# ── Zone Detail cards — OUTSIDE the with block ─────────────────────────────────
+# Using explicit col_alert.markdown() here is MANDATORY.
+# Any st.markdown() here would fall outside all column contexts and
+# render in the full-width area below the three columns.
+col_alert.markdown(
+    '<div class="sec-title" style="margin-top:0.8rem">🔍 Zone Detail</div>',
+    unsafe_allow_html=True,
+)
+col_alert.markdown(
+    _zone_detail_html("Zone A — MAF (Pre-Turbo)",  snap_ra, THRESH["A"]) +
+    _zone_detail_html("Zone B — MAP (Charge-Air)",  snap_rb, THRESH["B"]) +
+    _zone_detail_html("Zone C — EBP (Exhaust)",     snap_rc, THRESH["C"]),
+    unsafe_allow_html=True,
+)
 
 
 

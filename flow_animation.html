@@ -83,25 +83,8 @@
     opacity: 0;
   }
 
-  /* Leak Animations */
-  .leak-particle {
-    position: absolute;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    opacity: 0;
-    pointer-events: none;
-    box-shadow: 0 0 10px currentColor;
-  }
-  
-  @keyframes vent {
-    0% { transform: translate(0, 0) scale(1); opacity: 1; }
-    100% { transform: translate(var(--dx), var(--dy)) scale(3); opacity: 0; }
-  }
-
-  #leak-container {
-    position: absolute;
-    top: 0; left: 0; width: 100%; height: 100%;
+  /* Leak SVG indicator styles */
+  .leak-indicator {
     pointer-events: none;
   }
 
@@ -144,6 +127,19 @@
         <circle cx="0" cy="0" r="35" fill="rgba(30,41,59,0.9)" stroke="rgba(148,163,184,0.8)" stroke-width="3"/>
         <path d="M-28,-28 L28,28 M-28,28 L28,-28 M-38,0 L38,0 M0,-38 L0,38" stroke="rgba(255,255,255,0.7)" stroke-width="6"/>
         <circle cx="0" cy="0" r="8" fill="white"/>
+      </g>
+
+      <!-- Leak indicator: small pulsing ring + dot — reusable via <use> -->
+      <g id="leak-marker">
+        <circle cx="0" cy="0" r="5" fill="currentColor" opacity="0.95"/>
+        <circle cx="0" cy="0" r="9" fill="none" stroke="currentColor" stroke-width="2" opacity="0.7">
+          <animate attributeName="r" values="9;17;9" dur="1.1s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.7;0;0.7" dur="1.1s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="0" cy="0" r="15" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.35">
+          <animate attributeName="r" values="15;24;15" dur="1.1s" begin="0.3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.35;0;0.35" dur="1.1s" begin="0.3s" repeatCount="indefinite"/>
+        </circle>
       </g>
     </defs>
 
@@ -246,9 +242,59 @@
     <!-- Live Turbo RPM Readout -->
     <text class="data-label" id="turbo-rpm-text" x="630" y="90">0 RPM</text>
 
-  </svg>
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- LEAK INDICATORS — each placed at the exact midpoint of its pipe   -->
+    <!-- Hidden by default; JS shows only the active one                   -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
 
-  <div id="leak-container"></div>
+    <!-- Zone A: pre-turbo — midpoint of Air Filter→MAF fresh-air pipe (x=270, y=180) -->
+    <g id="leak-zone-A" display="none" color="#60a5fa">
+      <use href="#leak-marker" x="270" y="180"/>
+      <text x="270" y="158" text-anchor="middle" font-size="13" font-weight="bold" fill="#60a5fa" opacity="0.9">LEAK</text>
+    </g>
+
+    <!-- Zone B: before intercooler — hot compressed-air pipe midpoint (x=905, y=180) -->
+    <g id="leak-zone-B-before" display="none" color="#f87171">
+      <use href="#leak-marker" x="905" y="180"/>
+      <text x="905" y="158" text-anchor="middle" font-size="13" font-weight="bold" fill="#f87171" opacity="0.9">LEAK</text>
+    </g>
+
+    <!-- Zone B: after intercooler — cooled air pipe going down to intake manifold (x=1390, y=290) -->
+    <g id="leak-zone-B-after" display="none" color="#4ade80">
+      <use href="#leak-marker" x="1390" y="290"/>
+      <text x="1430" y="290" text-anchor="start" font-size="13" font-weight="bold" fill="#4ade80" opacity="0.9">LEAK</text>
+    </g>
+
+    <!-- Zone C: exhaust_manifold — at the exhaust manifold box top edge (x=420, y=360) -->
+    <g id="leak-zone-C-manifold" display="none" color="#c084fc">
+      <use href="#leak-marker" x="420" y="355"/>
+      <text x="420" y="335" text-anchor="middle" font-size="13" font-weight="bold" fill="#c084fc" opacity="0.9">LEAK</text>
+    </g>
+
+    <!-- Zone C: manifold_to_turbine — pipe from exh manifold to turbine, midpoint ~(515,320) -->
+    <g id="leak-zone-C-mant" display="none" color="#c084fc">
+      <use href="#leak-marker" x="515" y="320"/>
+      <text x="555" y="315" text-anchor="start" font-size="13" font-weight="bold" fill="#c084fc" opacity="0.9">LEAK</text>
+    </g>
+
+    <!-- Zone C: turbine_to_doc — diagonal pipe turbine→DOC, midpoint ~(460,430) -->
+    <g id="leak-zone-C-tdoc" display="none" color="#c084fc">
+      <use href="#leak-marker" x="460" y="430"/>
+      <text x="500" y="425" text-anchor="start" font-size="13" font-weight="bold" fill="#c084fc" opacity="0.9">LEAK</text>
+    </g>
+
+    <!-- Zone C: doc_to_dpf — bottom exhaust pipe between DOC and DPF, midpoint ~(395,560) -->
+    <g id="leak-zone-C-ddpf" display="none" color="#c084fc">
+      <use href="#leak-marker" x="395" y="560"/>
+      <text x="395" y="538" text-anchor="middle" font-size="13" font-weight="bold" fill="#c084fc" opacity="0.9">LEAK</text>
+    </g>
+
+    <!-- Zone C: dpf_to_scr — bottom exhaust pipe between DPF and SCR, midpoint ~(645,560) -->
+    <g id="leak-zone-C-dscr" display="none" color="#c084fc">
+      <use href="#leak-marker" x="645" y="560"/>
+      <text x="645" y="538" text-anchor="middle" font-size="13" font-weight="bold" fill="#c084fc" opacity="0.9">LEAK</text>
+    </g>
+  </svg>
 
   <div class="legend">
     <div class="legend-item"><div class="dot" style="background:#3b82f6"></div> Fresh Air</div>
@@ -270,7 +316,18 @@
   const turbWheel = document.getElementById('turbine-wheel');
   const blurFilter = document.getElementById('blur-filter');
   const turboText = document.getElementById('turbo-rpm-text');
-  const leakContainer = document.getElementById('leak-container');
+
+  // All leak indicator SVG groups
+  const leakGroups = {
+    'leak-zone-A':          document.getElementById('leak-zone-A'),
+    'leak-zone-B-before':   document.getElementById('leak-zone-B-before'),
+    'leak-zone-B-after':    document.getElementById('leak-zone-B-after'),
+    'leak-zone-C-manifold': document.getElementById('leak-zone-C-manifold'),
+    'leak-zone-C-mant':     document.getElementById('leak-zone-C-mant'),
+    'leak-zone-C-tdoc':     document.getElementById('leak-zone-C-tdoc'),
+    'leak-zone-C-ddpf':     document.getElementById('leak-zone-C-ddpf'),
+    'leak-zone-C-dscr':     document.getElementById('leak-zone-C-dscr'),
+  };
   
   // Interpolation targets
   let state = {
@@ -291,61 +348,28 @@
   // Animation variables
   let particleOffset = 0;
   let turboAngle = 0;
-  let enginePhase = 0; // 0 to 1 cycle
-  
-  // Leak tracking
-  let lastLeakZone = null;
-  let lastLeakSub = null;
-  let leakInterval = null;
+  let enginePhase = 0;
 
-  function spawnLeakParticles(x, y, color) {
-    for (let i = 0; i < 4; i++) {
-      const p = document.createElement('div');
-      p.className = 'leak-particle';
-      p.style.color = color;
-      p.style.background = color;
-      p.style.left = x + '%';
-      p.style.top = y + '%';
-      
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 50 + Math.random() * 80;
-      p.style.setProperty('--dx', Math.cos(angle) * dist + 'px');
-      p.style.setProperty('--dy', Math.sin(angle) * dist - 50 + 'px');
-      p.style.animation = `vent ${0.4 + Math.random() * 0.4}s ease-out forwards`;
-      
-      leakContainer.appendChild(p);
-      setTimeout(() => p.remove(), 1000);
-    }
-  }
-
-  function startLeak(zone, sub) {
-    if (leakInterval) clearInterval(leakInterval);
-    
-    // Mapping to responsive percentages
-    let lx = 50, ly = 50, color = '#ffffff';
-    
+  // ── SVG Leak Indicator helpers ───────────────────────────────────────────────
+  function showLeak(zone, sub) {
+    Object.values(leakGroups).forEach(g => g && g.setAttribute('display', 'none'));
+    let id = null;
     if (zone === 'A') {
-      lx = 20; ly = 25; color = '#3b82f6';
+      id = 'leak-zone-A';
     } else if (zone === 'B') {
-      if (sub.includes('before')) { lx = 55; ly = 25; color = '#f87171'; }
-      else { lx = 80; ly = 40; color = '#4ade80'; }
+      id = (sub && sub.includes('before')) ? 'leak-zone-B-before' : 'leak-zone-B-after';
     } else if (zone === 'C') {
-      color = '#c084fc';
-      if (sub.includes('manifold')) { lx = 26; ly = 55; }
-      else if (sub.includes('turbine')) { lx = 35; ly = 42; }
-      else if (sub.includes('doc')) { lx = 20; ly = 75; }
-      else if (sub.includes('dpf')) { lx = 35; ly = 75; }
-      else { lx = 55; ly = 75; }
+      if      (sub && sub.includes('manifold_to_turbine')) id = 'leak-zone-C-mant';
+      else if (sub && sub.includes('turbine_to_doc'))      id = 'leak-zone-C-tdoc';
+      else if (sub && sub.includes('doc_to_dpf'))          id = 'leak-zone-C-ddpf';
+      else if (sub && sub.includes('dpf_to_scr'))          id = 'leak-zone-C-dscr';
+      else                                                 id = 'leak-zone-C-manifold';
     }
-
-    leakInterval = setInterval(() => spawnLeakParticles(lx, ly, color), 80);
+    if (id && leakGroups[id]) leakGroups[id].setAttribute('display', 'inline');
   }
 
-  function stopLeak() {
-    if (leakInterval) {
-      clearInterval(leakInterval);
-      leakInterval = null;
-    }
+  function hideLeak() {
+    Object.values(leakGroups).forEach(g => g && g.setAttribute('display', 'none'));
   }
 
   async function pollState() {
@@ -353,12 +377,12 @@
       const res = await fetch(`http://localhost:${port}/state.json`);
       if (res.ok) {
         const data = await res.json();
-        state.rpm = data.rpm || 800;
-        state.maf = data.maf || 50;
-        state.n_turbo = data.n_turbo || 20000;
+        state.rpm       = data.rpm       || 800;
+        state.maf       = data.maf       || 50;
+        state.n_turbo   = data.n_turbo   || 20000;
         state.leak_zone = data.leak_zone;
-        state.leak_sub = data.leak_sub;
-        state.status = data.status;
+        state.leak_sub  = data.leak_sub;
+        state.status    = data.status;
       }
     } catch (e) {}
   }
@@ -372,89 +396,46 @@
     const dt = (time - lastTime) / 1000;
     lastTime = time;
 
-    // Smooth Interpolation (Lerp over ~0.5 seconds)
+    // Smooth interpolation
     const lerp = 4.0 * dt;
-    current.rpm += (state.rpm - current.rpm) * lerp;
-    current.maf += (state.maf - current.maf) * lerp;
+    current.rpm     += (state.rpm     - current.rpm)     * lerp;
+    current.maf     += (state.maf     - current.maf)     * lerp;
     current.n_turbo += (state.n_turbo - current.n_turbo) * lerp;
 
     // --- Particle Animation ---
-    // Velocity scales with RPM
-    const particleSpeed = (current.rpm / 2000) * 150; // pixels per second
+    const particleSpeed = (current.rpm / 2000) * 150;
     particleOffset -= particleSpeed * dt;
-    if (particleOffset < -1000) particleOffset += 1000; // avoid large numbers
-    
-    // Density scales with MAF (higher MAF = smaller gap)
-    // Gap base = 50. At 200g/s, gap = 20.
-    const gap = Math.max(16, 80 - (current.maf * 0.25));
+    if (particleOffset < -1000) particleOffset += 1000;
+    const gap  = Math.max(16, 80 - (current.maf * 0.25));
     const dash = `12 ${gap}`;
-
-    forwardPaths.forEach(p => {
-        p.style.strokeDashoffset = particleOffset;
-        p.style.strokeDasharray = dash;
-    });
-    reversePaths.forEach(p => {
-        p.style.strokeDashoffset = -particleOffset;
-        p.style.strokeDasharray = dash;
-    });
+    forwardPaths.forEach(p => { p.style.strokeDashoffset = particleOffset; p.style.strokeDasharray = dash; });
+    reversePaths.forEach(p => { p.style.strokeDashoffset = -particleOffset; p.style.strokeDasharray = dash; });
 
     // --- Turbo Animation ---
-    // n_turbo can be up to 120,000 RPM. We scale it for visual rotation
-    const visualTurboRps = (current.n_turbo / 60) * 0.1; // Scale down for monitor limits
+    const visualTurboRps = (current.n_turbo / 60) * 0.1;
     turboAngle += visualTurboRps * 360 * dt;
-    
     const rotStr = `rotate(${turboAngle})`;
     compWheel.setAttribute('transform', rotStr);
     turbWheel.setAttribute('transform', rotStr);
-
-    // Motion blur if turbo is screaming (> 80k RPM)
-    if (current.n_turbo > 70000) {
-        blurFilter.setAttribute('stdDeviation', `0 ${(current.n_turbo - 70000) / 10000}`);
-    } else {
-        blurFilter.setAttribute('stdDeviation', `0 0`);
-    }
+    blurFilter.setAttribute('stdDeviation', current.n_turbo > 70000 ? `0 ${(current.n_turbo - 70000) / 10000}` : `0 0`);
     turboText.textContent = `${Math.round(current.n_turbo).toLocaleString()} RPM`;
 
     // --- Engine Cylinder Animation ---
-    // 1 cycle = 2 piston strokes (down-up-down-up)
-    // Scale down the physical RPS to a visually pleasing frame rate to prevent high-frequency aliasing ("strobing" that looks like rotation)
-    const visualEngineRps = (current.rpm / 3000) * 3; // Max 3 cycles per sec
+    const visualEngineRps = (current.rpm / 3000) * 3;
     enginePhase += visualEngineRps * dt;
-    if (enginePhase >= 1) enginePhase -= 1; // loop 0..1
+    if (enginePhase >= 1) enginePhase -= 1;
+    const strokeAmt = Math.cos(enginePhase * Math.PI * 2);
+    piston.setAttribute('transform', `translate(0, ${-90 * ((strokeAmt + 1) / 2)})`);
+    combustion.style.opacity = enginePhase < 0.15 ? (1.0 - enginePhase / 0.15)
+                             : enginePhase > 0.85 ? (enginePhase - 0.85) / 0.15 : 0;
 
-    // Piston height: simple sine wave mapping.
-    // 1 stroke per cycle. enginePhase 0 -> top, 0.5 -> bottom
-    const strokeAmt = Math.cos(enginePhase * Math.PI * 2); // 1 = top, -1 = bottom
-    const yOffset = -90 * ((strokeAmt + 1) / 2); // 0 to -90px
-    piston.setAttribute('transform', `translate(0, ${yOffset})`);
-
-    // Combustion flash precisely at Top Dead Center (phase 0 or 1)
-    if (enginePhase < 0.15) {
-        combustion.style.opacity = 1.0 - (enginePhase / 0.15);
-    } else if (enginePhase > 0.85) {
-        combustion.style.opacity = (enginePhase - 0.85) / 0.15;
-    } else {
-        combustion.style.opacity = 0;
-    }
-
-    // --- Leak Handling ---
+    // --- Leak SVG Indicator ---
     const isLeak = state.status === "ALERT" || state.status === "MONITOR";
-    if (isLeak && state.leak_zone) {
-      if (lastLeakZone !== state.leak_zone || lastLeakSub !== state.leak_sub) {
-        lastLeakZone = state.leak_zone;
-        lastLeakSub = state.leak_sub;
-        startLeak(state.leak_zone, state.leak_sub);
-      }
-    } else {
-      lastLeakZone = null;
-      lastLeakSub = null;
-      stopLeak();
-    }
+    isLeak && state.leak_zone ? showLeak(state.leak_zone, state.leak_sub) : hideLeak();
 
     requestAnimationFrame(renderFrame);
   }
 
-  // Start loop
   requestAnimationFrame(renderFrame);
 
 </script>
