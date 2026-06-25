@@ -268,18 +268,28 @@ def _init_session():
                     shared["stream_error"] = f"File read error: {e}"
 
             elif source == "network":
-                url = shared.get("net_url", "")
-                if url:
+                url = shared.get("net_url", "").strip()
+                # Only attempt connection if the user entered a real URL.
+                # Skip if empty, still the placeholder template, or missing a path.
+                _url_looks_real = (
+                    url
+                    and url.startswith("http")
+                    and "/" in url[8:]          # has a path after the host
+                    and "<" not in url          # not a template like <ip>:<port>
+                )
+                if _url_looks_real:
                     try:
-                        req = urllib.request.urlopen(url, timeout=1)
+                        req = urllib.request.urlopen(url, timeout=2)
                         raw = json.loads(req.read().decode())
                         shared["stream_error"] = ""
                     except urllib.error.URLError as e:
                         shared["stream_error"] = f"Network error: {e.reason}"
                     except Exception as e:
                         shared["stream_error"] = f"Fetch error: {e}"
+                elif url and not _url_looks_real:
+                    shared["stream_error"] = "Invalid URL format — use http://<IP>:<port>/stream"
                 else:
-                    shared["stream_error"] = "Enter a network URL above."
+                    shared["stream_error"] = ""  # blank input — show nothing, not an error
 
             elif source == "csv":
                 if shared.get("playback_running"):
@@ -353,7 +363,7 @@ def _init_session():
         "lock":             lock,
         "ml_loaded":        ml.is_loaded,
         "selected_source":  "Local File  (same laptop)",
-        "net_url_input":    "http://192.168.1.100:5000/stream",
+        "net_url_input":    "",
     })
 
 
@@ -459,22 +469,38 @@ with cfg_col:
 
     elif "Network URL" in source_choice:
         shared["source"] = "network"
-        net_url = st.text_input(
-            "Network stream URL",
-            value=st.session_state.get("net_url_input", "http://192.168.1.100:5000/stream"),
-            key="net_url_input",
-            placeholder="http://<test-cell-IP>:<port>/stream",
-        )
+        url_col, btn_col = st.columns([5, 1])
+        with url_col:
+            net_url = st.text_input(
+                "Network stream URL",
+                value=st.session_state.get("net_url_input", ""),
+                key="net_url_input",
+                placeholder="e.g. http://192.168.1.50:8502/stream",
+                label_visibility="visible",
+            )
+        with btn_col:
+            st.write("")   # vertical nudge
+            connect_clicked = st.button("🔌 Connect", key="net_connect",
+                                        use_container_width=True, type="primary")
+        # Commit URL to background thread immediately on button click OR on Enter
         shared["net_url"] = net_url
+        if connect_clicked:
+            shared["net_url"] = net_url
+            st.rerun()
         st.markdown(
             '<p style="font-size:0.75rem;color:#64748b;margin-top:0.2rem">'
-            'Enter the URL shown in the header of test_cell_ui.py running on the other laptop.'
+            'Paste the URL from the <b>🌐 Network stream →</b> header in '
+            '<b>test_cell_ui.py</b>, then press <b>Enter</b> or click <b>🔌 Connect</b>.'
             '</p>',
             unsafe_allow_html=True,
         )
         if s_err:
             st.error(s_err)
-        elif step_n > 0:
+        elif not net_url.strip():
+            st.info("📋 Paste the stream URL above, then press Enter or click Connect.", icon="🌐")
+        elif step_n == 0:
+            st.warning("⏳ Connecting… make sure test_cell_ui.py is running on the other machine.")
+        else:
             st.success(f"✅ Receiving data — {step_n:,} samples processed")
 
     elif "CSV Playback" in source_choice:
@@ -826,22 +852,21 @@ with col_alert:
           <div class="alert-sub">{desc}</div>
         </div>
         """, unsafe_allow_html=True)
+
+    # ── Zone Detail — always shown at bottom of col_alert ──────────────────
+    st.markdown(
+        '<div class="sec-title" style="margin-top:0.8rem">🔍 Zone Detail</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        _zone_detail_html("Zone A — MAF (Pre-Turbo)",  snap_ra, THRESH["A"]) +
+        _zone_detail_html("Zone B — MAP (Charge-Air)",  snap_rb, THRESH["B"]) +
+        _zone_detail_html("Zone C — EBP (Exhaust)",     snap_rc, THRESH["C"]),
+        unsafe_allow_html=True,
+    )
 # END of `with col_alert:` block
 
-# ── Zone Detail cards — OUTSIDE the with block ─────────────────────────────────
-# Using explicit col_alert.markdown() here is MANDATORY.
-# Any st.markdown() here would fall outside all column contexts and
-# render in the full-width area below the three columns.
-col_alert.markdown(
-    '<div class="sec-title" style="margin-top:0.8rem">🔍 Zone Detail</div>',
-    unsafe_allow_html=True,
-)
-col_alert.markdown(
-    _zone_detail_html("Zone A — MAF (Pre-Turbo)",  snap_ra, THRESH["A"]) +
-    _zone_detail_html("Zone B — MAP (Charge-Air)",  snap_rb, THRESH["B"]) +
-    _zone_detail_html("Zone C — EBP (Exhaust)",     snap_rc, THRESH["C"]),
-    unsafe_allow_html=True,
-)
+
 
 
 

@@ -157,15 +157,27 @@ def _active_sub(sim: EngineSimulator):
     return None
 
 def _own_ip() -> str:
+    """Return the best LAN IP — the one that can reach the local network."""
+    for target in ("192.168.1.1", "8.8.8.8"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((target, 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if not ip.startswith("127.") and not ip.startswith("169.254"):
+                return ip
+        except Exception:
+            pass
+    # Fallback: scan all interfaces and return first non-loopback
     try:
-        # Connect to an external address to find the LAN IP
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        hostname = socket.gethostname()
+        for addr in socket.getaddrinfo(hostname, None):
+            ip = addr[4][0]
+            if not ip.startswith("127.") and ":" not in ip and not ip.startswith("169.254"):
+                return ip
     except Exception:
-        return "127.0.0.1"
+        pass
+    return "127.0.0.1"
 
 
 # ─── Session State Boot ────────────────────────────────────────────────────────
@@ -204,10 +216,10 @@ def _init_session():
     # Serves two endpoints:
     #   /state.json  — consumed by flow_animation.html iframe (same machine)
     #   /stream      — consumed by diagnostic_ui.py on another machine (Wi-Fi)
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("", 0))
-    port = s.getsockname()[1]
-    s.close()
+    #
+    # Try preferred port 8502 first; fall back to any free OS-assigned port.
+    # SO_REUSEADDR lets the server restart immediately if the port was in use.
+    STREAM_PORT = 8502
 
     class StateHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, fmt, *args): pass  # suppress noise
@@ -236,8 +248,23 @@ def _init_session():
                 self.send_response(404)
                 self.end_headers()
 
-    server = socketserver.TCPServer(("", port), StateHandler)
-    threading.Thread(target=server.serve_forever, daemon=True, name="TC_StateServer").start()
+    # allow_reuse_address MUST be set before TCPServer() calls bind().
+    socketserver.TCPServer.allow_reuse_address = True
+    server_error = ""
+    port = STREAM_PORT
+    try:
+        server = socketserver.TCPServer(("", STREAM_PORT), StateHandler)
+        port = server.server_address[1]   # actual bound port
+        threading.Thread(target=server.serve_forever, daemon=True, name="TC_StateServer").start()
+    except OSError:
+        # Preferred port busy — let OS pick any free port
+        try:
+            server = socketserver.TCPServer(("", 0), StateHandler)
+            port = server.server_address[1]
+            threading.Thread(target=server.serve_forever, daemon=True, name="TC_StateServer").start()
+        except OSError as e:
+            server_error = f"HTTP server failed to start: {e}"
+            port = 0
 
     st.session_state.update({
         "tc_initialized": True,
@@ -245,6 +272,7 @@ def _init_session():
         "shared":         shared,
         "lock":           lock,
         "port":           port,
+        "server_error":   server_error,
         "daq_active":     False,
         "own_ip":         _own_ip(),
         "csv_ready":      False,
@@ -272,6 +300,13 @@ has_lk    = _has_leak(sim)
 badge_cls  = "badge-purple" if is_daq_on else "badge-warm"
 badge_text = "📡 DAQ LIVE" if is_daq_on else "⭕ DAQ STANDBY"
 lk_badge   = ' &nbsp; <span class="badge badge-red">🔴 FAULT ACTIVE</span>' if has_lk else ""
+server_err = st.session_state.get("server_error", "")
+
+net_info = (
+    f'<b style="color:#f87171">⚠ HTTP Server Error: {server_err}</b>'
+    if server_err
+    else f'<b style="color:#a5b4fc">http://{own_ip}:{port}/stream</b>'
+)
 
 st.markdown(f"""
 <div class="cat-header">
@@ -284,12 +319,14 @@ st.markdown(f"""
   <div style="text-align:right">
     <span class="badge {badge_cls}">{badge_text}</span>{lk_badge}
     <div class="cat-subtitle" style="margin-top:6px">
-      🌐 Network stream →
-      <b style="color:#a5b4fc">http://{own_ip}:{port}/stream</b>
+      🌐 Network stream → {net_info}
     </div>
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+if server_err:
+    st.error(f"🚫 Network streaming unavailable — {server_err}. Restart test_cell_ui.py to retry.")
 
 
 # ─── Flow Animation ───────────────────────────────────────────────────────────
